@@ -113,7 +113,7 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
         db_path = str(self._get_db_path(date, db_type))
 
         if db_path not in self._db_connections:
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             self._init_tables(conn, db_type)
             self._db_connections[db_path] = conn

@@ -321,7 +321,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             if not local_path.exists():
                 self._download_sqlite(date, db_type)
 
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             self._init_tables(conn, db_type)
             self._db_connections[db_path] = conn
