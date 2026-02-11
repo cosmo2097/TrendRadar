@@ -361,4 +361,4 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     # 开发模式启动
-    uvicorn.run("trendradar.api.main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("briefing_server.main:app", host="0.0.0.0", port=8000, reload=True)
