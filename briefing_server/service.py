@@ -14,11 +14,15 @@ from trendradar.crawler import DataFetcher
 from trendradar.crawler.rss import RSSFetcher, RSSFeedConfig
 # from trendradar.core.frequency import parse_frequency_rules # Removed
 from briefing_server.utils import parse_frequency_rules # Use local util
-from briefing_server.data import get_titles_by_date_range # Import local data agg
+from briefing_server.utils import parse_frequency_rules # Use local util
+from briefing_server.data import get_titles_by_date_range, get_rss_by_date_range # Import local data agg
+from trendradar.core.frequency import load_frequency_words # Import frequency loader
+from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats, count_rss_frequency
 from datetime import timedelta
 from litellm import completion # Import litellm directly for streaming
+from trendradar.utils.time import is_within_days, DEFAULT_TIMEZONE, calculate_days_old
 
 
 # 配置日志
@@ -35,6 +39,16 @@ class BriefingService:
         self.config = config
         self.ctx = AppContext(config)
         self.data_fetcher = DataFetcher(self.ctx.config["DEFAULT_PROXY"] if self.ctx.config["USE_PROXY"] else None)
+
+    def reload_config(self) -> Dict[str, Any]:
+        """重新加载配置"""
+        logger.info("Reloading configuration...")
+        self.config = load_config()
+        self.ctx = AppContext(self.config)
+        # 重新初始化 data_fetcher
+        self.data_fetcher = DataFetcher(self.ctx.config["DEFAULT_PROXY"] if self.ctx.config["USE_PROXY"] else None)
+        logger.info("Configuration reloaded successfully")
+        return {"status": "success", "message": "Configuration reloaded"}
 
     async def generate_briefing(
         self,
@@ -117,26 +131,26 @@ class BriefingService:
             # 最近 7 天 (含今天)
             end_date = now
             start_date = now - timedelta(days=6)
-        elif date_range == "monthly":
-            # 最近 30 天 (含今天)
-            end_date = now
-            start_date = now - timedelta(days=29)
+            start_str = start_date.strftime("%Y-%m-%d")
+            end_str = end_date.strftime("%Y-%m-%d")
         elif date_range == "daily":
-            # 今天
-            start_date = end_date = now
+            # 今天 (使用 None 触发 _fetch_all_data 的优化路径)
+            start_str = None
+            end_str = None
         else:
             # 尝试解析具体日期 (YYYY-MM-DD)
             try:
                 target = datetime.strptime(date_range, "%Y-%m-%d")
                 start_date = end_date = target
+                start_str = start_date.strftime("%Y-%m-%d")
+                end_str = end_date.strftime("%Y-%m-%d")
             except ValueError:
-                # 解析失败，默认今天
-                logger.warning(f"Invalid date_range: {date_range}, fallback to daily")
-                start_date = end_date = now
-
-            
-        start_str = start_date.strftime("%Y-%m-%d")
-        end_str = end_date.strftime("%Y-%m-%d")
+                # 可能是自定义范围 "YYYY-MM-DD,YYYY-MM-DD" 或者解析失败
+                # 这里我们假设 API 层已经验证了格式，或者 date_range 本身就是一个日期
+                # 如果 date_range 不匹配以上关键字，暂且认为是无效或不支持，fallback to daily
+                logger.warning(f"Invalid or unsupported date_range: {date_range}, fallback to daily")
+                start_str = None
+                end_str = None
 
         
         # 传递日期范围给 _fetch_all_data
@@ -168,11 +182,178 @@ class BriefingService:
             quiet=True
         )
 
+
+
+        # 4. 补充 published_at 字段 (因 analyzer.py 不可修改，在此处注入)
+        # 4.1 Hotlist: 使用 first_time 作为 published_at
+        for stat in stats:
+            for title_data in stat.get("titles", []):
+                title_data["published_at"] = title_data.get("first_time", "")
+                
+        # 4.2 RSS: 从原始 rss_items 中映射 published_at
+        rss_url_map = {item.get("url"): item.get("published_at") for item in rss_items if item.get("url")}
+        for stat in rss_stats:
+            for title_data in stat.get("titles", []):
+                url = title_data.get("url")
+                if url and url in rss_url_map:
+                    title_data["published_at"] = rss_url_map[url]
+                else:
+                    title_data["published_at"] = ""
+
         return {
             "success": True,
             "stats": stats,
             "rss_stats": rss_stats,
             "platforms": list(id_to_name.values())
+        }
+
+    async def search_news(
+        self,
+        query: Optional[str] = None,
+        start_date: str = None,
+        end_date: str = None,
+        platform_ids: Optional[List[str]] = None,
+        preset: Optional[str] = None,
+        result_format: str = "timeline"
+    ) -> Dict[str, Any]:
+        """
+        搜索新闻
+        """
+        # 验证: query 和 preset 至少有一个
+        if not query and not preset:
+             return {"success": False, "error": "Must provide either 'query' or 'preset'"}
+             
+        # 解析 preset 为 keywords
+        include_regex = None
+        if preset:
+             groups, _, _ = load_frequency_words()
+             for g in groups:
+                 if g.get("display_name") == preset:
+                     include_regex = g.get("group_key")
+                     break
+             if not include_regex:
+                 return {
+                    "success": True,
+                    "query": query,
+                    "preset": preset,
+                    "date_range": f"{start_date} to {end_date}",
+                    "total": 0,
+                    "results": [],
+                    "message": f"Preset '{preset}' not found"
+                 }
+            
+        all_results, id_to_name, title_info, rss_items = await self._fetch_all_data(
+            allowed_sources=platform_ids,
+            start_date=start_date,
+            end_date=end_date,
+            query=query,
+            include_regex=include_regex
+        )
+        
+        # 格式化结果
+        results = []
+        total_count = 0
+        
+        if result_format == "timeline":
+             timeline_items = []
+
+             # 1. Hotlist items
+             for source_id, titles in all_results.items():
+                 source_name = id_to_name.get(source_id, source_id)
+                 source_info = title_info.get(source_id, {})
+                 for title, ranks in titles.items():
+                     info = source_info.get(title, {})
+                     timeline_items.append({
+                         "title": title,
+                         "url": info.get("url", "") or info.get("mobileUrl", ""),
+                         "source_name": source_name,
+                         "source_id": source_id,
+                         "type": "hotlist",
+                         "published_at": end_date, # Fallback to end_date as hotlist items don't have precise time
+                         "ranks": ranks,
+                         "summary": ""
+                     })
+
+             # 2. RSS items
+             for item in rss_items:
+                 timeline_items.append({
+                     "title": item["title"],
+                     "url": item["url"],
+                     "source_name": item["feed_name"],
+                     "source_id": item["feed_id"],
+                     "type": "rss",
+                     "published_at": item.get("published_at", ""),
+                     "summary": item.get("summary", "")
+                 })
+             
+             # Sort by published_at desc
+             def parse_time(t_str):
+                 if not t_str: return ""
+                 return t_str
+             
+             timeline_items.sort(key=lambda x: parse_time(x.get("published_at")) or "", reverse=True)
+             results = timeline_items
+             total_count = len(results)
+
+        else:
+            # 1. 处理热榜新闻
+            for source_id, titles in all_results.items():
+                if not titles:
+                    continue
+                
+                source_name = id_to_name.get(source_id, source_id)
+                source_info = title_info.get(source_id, {})
+                
+                items = []
+                for title, ranks in titles.items():
+                    info = source_info.get(title, {})
+                    items.append({
+                        "title": title,
+                        "url": info.get("url", ""),
+                        "ranks": ranks,
+                        "mobileUrl": info.get("mobileUrl", "")
+                    })
+                
+                if items:
+                    results.append({
+                        "source_id": source_id,
+                        "source_name": source_name,
+                        "type": "hotlist",
+                        "count": len(items),
+                        "items": items
+                    })
+                    total_count += len(items)
+            
+            # 2. 处理 RSS 结果
+            rss_grouped = {}
+            for item in rss_items:
+                fid = item["feed_id"]
+                if fid not in rss_grouped:
+                    rss_grouped[fid] = {
+                        "source_id": fid,
+                        "source_name": item["feed_name"],
+                        "type": "rss",
+                        "items": []
+                    }
+                rss_grouped[fid]["items"].append({
+                    "title": item["title"],
+                    "url": item["url"],
+                    "published_at": item.get("published_at"),
+                    "summary": item.get("summary")
+                })
+                
+            for group in rss_grouped.values():
+                group["count"] = len(group["items"])
+                results.append(group)
+                total_count += len(group["items"])
+                
+        return {
+            "success": True,
+            "query": query,
+            "preset": preset,
+            "date_range": f"{start_date} to {end_date}",
+            "total": total_count,
+            "results": results
         }
 
     async def analyze_briefing_data(
@@ -256,10 +437,25 @@ class BriefingService:
         custom_rss_urls: Optional[List[str]] = None,
         start_date: str = None,
         end_date: str = None,
+        query: str = None,
+        include_regex: str = None,
     ) -> Tuple[Dict, Dict, Dict, List[Dict]]:
         """
         获取所有数据（新闻 + RSS），支持并行抓取自定义 RSS
         """
+        # 限制查询范围最大为 7 天
+        if start_date and end_date:
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                # 7天跨度: end - start = 6 days difference (inclusive count = 7)
+                if (end_dt - start_dt).days > 6:
+                    logger.warning(f"Date range too large ({start_date} to {end_date}), clamping to last 7 days")
+                    start_dt = end_dt - timedelta(days=6)
+                    start_date = start_dt.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
         # 1. 定义获取本地新闻的任务
         async def _fetch_local_news():
             if start_date and end_date:
@@ -267,12 +463,16 @@ class BriefingService:
                     get_titles_by_date_range,
                     self.ctx.get_storage_manager(),
                     start_date,
-
                     end_date,
                     allowed_sources,
-                    True
+                    query,  # query param
+                    include_regex, # include_regex param
+                    True    # quiet
                 )
             else:
+                # read_today_titles 不支持 query，暂时只在 range 模式支持搜索
+                # 如果 query 存在但没有 range，应该报错或者默认 range?
+                # search_news 接口会强制要求 range，所以这里安全
                 return await asyncio.to_thread(
                     self.ctx.read_today_titles,
                     allowed_sources,
@@ -281,27 +481,56 @@ class BriefingService:
 
         # 2. 定义获取本地 RSS 的任务
         async def _fetch_local_rss():
-            # 目前 RSS 暂只支持读取今天的数据 (TODO: 支持范围)
-            # 或者我们可以简单地循环读取每天的 RSS，但这里先保持简单
             storage = self.ctx.get_storage_manager()
-            today = self.ctx.format_date()
-            local_rss_data = await asyncio.to_thread(storage.get_rss_data, today)
             
-            items = []
-            if local_rss_data and local_rss_data.items:
-                 for feed_id, feed_items in local_rss_data.items.items():
-                     if allowed_sources and feed_id not in allowed_sources:
-                         continue
-                     for item in feed_items:
-                         items.append({
-                             "title": item.title,
-                             "url": item.url,
-                             "feed_name": local_rss_data.id_to_name.get(feed_id, feed_id),
-                             "feed_id": feed_id,
-                             "published_at": item.published_at,
-                             "summary": item.summary
-                         })
-            return items
+            if start_date and end_date:
+                # 使用范围查询
+                items = await asyncio.to_thread(
+                    get_rss_by_date_range,
+                    storage,
+                    start_date,
+                    end_date,
+                    allowed_sources, # allowed_feed_ids
+                    query,  # query param
+                    include_regex, # include_regex param
+                    True    # quiet
+                )
+                # 应用新鲜度过滤
+                return self._apply_freshness_filter(items, start_date, end_date)
+            else:
+                # 仅读取今天 (兼容旧逻辑)
+                today = self.ctx.format_date()
+                rss_data = await asyncio.to_thread(storage.get_rss_data, today)
+                
+                items = []
+                if rss_data and rss_data.items:
+                    for feed_id, feed_items in rss_data.items.items():
+                        if allowed_sources and feed_id not in allowed_sources:
+                            continue
+                            
+                        for item in feed_items:
+                            # 简单的 query 过滤
+                            if query and query.lower() not in item.title.lower():
+                                continue
+
+                            # 正则过滤
+                            if include_regex:
+                                import re
+                                if not re.search(include_regex, item.title, re.IGNORECASE):
+                                    continue
+                                
+                            items.append({
+                                 "title": item.title,
+                                 "url": item.url,
+                                 "feed_name": item.feed_name or feed_id,
+                                 "feed_id": feed_id,
+                                 "published_at": item.published_at,
+                                 "summary": item.summary
+                            })
+                # 应用新鲜度过滤
+                return self._apply_freshness_filter(items)
+
+
 
         # 3. 创建并发任务
         t1 = asyncio.create_task(_fetch_local_news())
@@ -320,6 +549,106 @@ class BriefingService:
         final_rss_items = local_rss_items + custom_rss_items
         
         return all_results, id_to_name, title_info, final_rss_items
+
+    def _apply_freshness_filter(self, items: List[Dict], start_date: str = None, end_date: str = None) -> List[Dict]:
+        """
+        应用新鲜度/时间范围过滤
+        
+        策略:
+        1. 如果提供了 start_date (即 Range Query):
+           - 忽略配置中的 max_age_days
+           - 严格按照 [start_date, end_date] 范围过滤 published_at
+           - 如果 published_at 为空，则保留（假设 crawl_time 符合要求）
+           
+        2. 如果未提供 start_date (即 Daily/Current):
+           - 使用配置中的 max_age_days 进行相对时间过滤 (IsFresh)
+        """
+        # 1. 范围过滤模式
+        if start_date:
+            try:
+                # 构造时间范围 (从 start_date 00:00 到 end_date 23:59:59)
+                # 注意：这里做简单的字符串比较或转换，需注意时区。
+                # 简单起见，我们解析为 datetime 进行比较
+                from dateutil import parser
+                import pytz
+                
+                tz = pytz.timezone(self.ctx.config.get("TIMEZONE", DEFAULT_TIMEZONE))
+                
+                # 解析开始时间
+                s_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                s_dt = tz.localize(s_dt)
+                
+                # 解析结束时间 (默认为开始时间，如果未提供)
+                e_str = end_date if end_date else start_date
+                e_dt = datetime.strptime(e_str, "%Y-%m-%d")
+                e_dt = tz.localize(e_dt) + timedelta(days=1) # +1天作为开区间上限，或包含当天的23:59
+                
+                filtered_items = []
+                for item in items:
+                    p_at = item.get("published_at")
+                    if not p_at:
+                        # 无发布时间，保留 (依赖 crawl_time 筛选)
+                        filtered_items.append(item)
+                        continue
+                        
+                    try:
+                        p_dt = parser.parse(p_at)
+                        if p_dt.tzinfo is None:
+                            p_dt = tz.localize(p_dt)
+                        else:
+                            p_dt = p_dt.astimezone(tz)
+                            
+                        # 比较范围: start <= pub < end+1d
+                        if s_dt <= p_dt < e_dt:
+                            filtered_items.append(item)
+                    except Exception:
+                        # 解析失败，保留
+                        filtered_items.append(item)
+                
+                return filtered_items
+                
+            except Exception as e:
+                logger.error(f"Date range filter error: {e}")
+                return items
+
+        # 2. 相对新鲜度模式 (Daily/Current)
+        rss_config = self.ctx.rss_config
+        freshness_config = rss_config.get("FRESHNESS_FILTER", {})
+        freshness_enabled = freshness_config.get("ENABLED", True)
+        default_max_age_days = freshness_config.get("MAX_AGE_DAYS", 3)
+        timezone = self.ctx.config.get("TIMEZONE", DEFAULT_TIMEZONE)
+
+        if not freshness_enabled:
+            return items
+
+        # 构建 feed_id -> max_age_days 的映射
+        feed_max_age_map = {}
+        for feed_cfg in self.ctx.rss_feeds:
+            feed_id = feed_cfg.get("id", "")
+            max_age = feed_cfg.get("max_age_days")
+            if max_age is not None:
+                try:
+                    feed_max_age_map[feed_id] = int(max_age)
+                except (ValueError, TypeError):
+                    pass
+        
+        filtered_items = []
+        for item in items:
+            feed_id = item.get("feed_id", "")
+            # 确定此 feed 的 max_age_days
+            max_days = feed_max_age_map.get(feed_id)
+            if max_days is None:
+                max_days = default_max_age_days
+            
+            # 新鲜度过滤
+            if max_days > 0:
+                published_at = item.get("published_at")
+                if published_at and not is_within_days(published_at, max_days, timezone):
+                    continue
+            
+            filtered_items.append(item)
+            
+        return filtered_items
 
 
 

@@ -4,31 +4,27 @@ Briefing Server 数据处理模块
 """
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
+import re
 
 def get_titles_by_date_range(
     storage_manager,
     start_date: str,
     end_date: str,
     current_platform_ids: Optional[List[str]] = None,
+    query: Optional[str] = None,
+    include_regex: Optional[str] = None,
     quiet: bool = False,
 ) -> Tuple[Dict, Dict, Dict]:
     """
-    读取指定日期范围内的所有标题，并进行聚合
-
-    Args:
-        storage_manager: 存储管理器实例
-        start_date: 开始日期 (YYYY-MM-DD)
-        end_date: 结束日期 (YYYY-MM-DD)
-        current_platform_ids: 过滤平台ID
-        quiet: 是否静默
-
-    Returns:
-        Tuple[Dict, Dict, Dict]: (aggregated_results, id_to_name, title_info)
-    """
-    aggregated_results = {}
-    final_id_to_name = {}
-    aggregated_title_info = {}
+    获取指定日期范围内的所有新闻标题
     
+    :param query: 必须包含的搜索词 (AND)
+    :param include_regex: 必须匹配的正则表达式 (AND logic with query)
+    """
+    aggregated_results = {}  # {source_id: {title: {ranks: [], ...}}}
+    aggregated_title_info = {} # {source_id: {title: {...}}}
+    final_id_to_name = {}
+
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
@@ -37,7 +33,7 @@ def get_titles_by_date_range(
         while current <= end:
             date_str = current.strftime("%Y-%m-%d")
             if not quiet:
-                print(f"[Briefing] Reading data for {date_str}...")
+                print(f"[Briefing] Processing {date_str}...")
             
             try:
                 # 获取当天原始数据
@@ -46,12 +42,12 @@ def get_titles_by_date_range(
                     current += timedelta(days=1)
                     continue
 
+                # Merge platform names
+                final_id_to_name.update(news_data.id_to_name)
+
                 for source_id, news_list in news_data.items.items():
                     if current_platform_ids is not None and source_id not in current_platform_ids:
                         continue
-
-                    source_name = news_data.id_to_name.get(source_id, source_id)
-                    final_id_to_name[source_id] = source_name
 
                     if source_id not in aggregated_results:
                         aggregated_results[source_id] = {}
@@ -59,6 +55,17 @@ def get_titles_by_date_range(
 
                     for item in news_list:
                         title = item.title
+                        
+                        # 关键词过滤 (Query: AND)
+                        if query:
+                            # 简单的大小写不敏感匹配
+                            if query.lower() not in title.lower():
+                                continue
+                                
+                        # 正则过滤 (Include Regex: AND)
+                        if include_regex:
+                            if not re.search(include_regex, title, re.IGNORECASE):
+                                continue
                         
                         # 聚合逻辑
                         if title in aggregated_title_info[source_id]:
@@ -115,3 +122,64 @@ def get_titles_by_date_range(
     except Exception as e:
         print(f"[Briefing] Date processing error: {e}")
         return {}, {}, {}
+
+
+def get_rss_by_date_range(
+    storage_manager,
+    start_date: str,
+    end_date: str,
+    allowed_feed_ids: Optional[List[str]] = None,
+    query: Optional[str] = None,
+    include_regex: Optional[str] = None,
+    quiet: bool = False,
+) -> List[Dict]:
+    """
+    读取指定日期范围内的所有 RSS 条目
+    """
+    rss_items = []
+    
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        
+        current = start
+        while current <= end:
+            date_str = current.strftime("%Y-%m-%d")
+            # quiet check can be here but logging is fine for now
+            
+            try:
+                rss_data = storage_manager.get_rss_data(date_str)
+                if rss_data and rss_data.items:
+                    for feed_id, items in rss_data.items.items():
+                        if allowed_feed_ids and feed_id not in allowed_feed_ids:
+                            continue
+                            
+                        for item in items:
+                            # 关键词过滤 (Query: AND)
+                            if query:
+                                if query.lower() not in item.title.lower():
+                                    continue
+                                    
+                            # 正则过滤 (Include Regex: AND)
+                            if include_regex:
+                                if not re.search(include_regex, item.title, re.IGNORECASE):
+                                    continue
+                                    
+                            rss_items.append({
+                                "title": item.title,
+                                "url": item.url,
+                                "feed_name": item.feed_name or feed_id,
+                                "feed_id": feed_id,
+                                "published_at": item.published_at,
+                                "summary": item.summary
+                            })
+            except Exception as e:
+                pass # Ignore errors for missing days
+                
+            current += timedelta(days=1)
+            
+        return rss_items
+        
+    except Exception as e:
+        print(f"[Briefing] RSS Date processing error: {e}")
+        return []

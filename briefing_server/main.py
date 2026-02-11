@@ -4,10 +4,11 @@ TrendRadar API 入口
 基于 FastAPI 提供 RESTful 服务
 """
 import logging
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Body, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -62,7 +63,50 @@ class BriefingRequest(BaseModel):
     custom_rss_urls: Optional[List[str]] = Field(None, description="需要实时抓取的自定义 RSS URL")
     stream: bool = Field(True, description="是否使用流式响应 (SSE)")
     ai_model: Optional[str] = Field(None, description="指定 AI 模型 (可选)")
-    date_range: str = Field("daily", description="日期范围: daily, weekly, monthly 或 YYYY-MM-DD")
+    date_range: str = Field("daily", description="日期范围: daily, weekly 或 YYYY-MM-DD (最大7天)")
+
+
+class SearchRequest(BaseModel):
+    """新闻搜索请求"""
+    query: Optional[str] = Field(None, description="搜索关键词")
+    start_date: Optional[str] = Field(None, description="开始日期 (YYYY-MM-DD), 默认为3天前")
+    end_date: Optional[str] = Field(None, description="结束日期 (YYYY-MM-DD), 默认为今天")
+    platforms: Optional[List[str]] = Field(None, description="指定平台 ID 列表")
+    preset: Optional[str] = Field(None, description="预设组名称")
+    format: Optional[str] = Field("timeline", description="返回格式: group (按源分组) 或 timeline (按时间排序)")
+
+
+# ... (Skipping unaffected lines)
+
+@app.post("/api/v1/search")
+async def search_news(request: SearchRequest):
+    """
+    搜索新闻
+    
+    默认查询最近3天的数据
+    """
+    if not service:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    # 默认日期范围：最近3天 (Today - 2 days to Today)
+    today = datetime.now().strftime("%Y-%m-%d")
+    three_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+    
+    start_date = request.start_date or three_days_ago
+    end_date = request.end_date or today
+    
+    try:
+        return await service.search_news(
+            query=request.query,
+            start_date=start_date,
+            end_date=end_date,
+            platform_ids=request.platforms,
+            preset=request.preset,
+            result_format=request.format
+        )
+    except Exception as e:
+        logger.error(f"Search API Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
@@ -75,7 +119,7 @@ class AnalysisRequest(BaseModel):
     ai_model: Optional[str] = Field(None, description="指定 AI 模型 (可选)")
     ai_model: Optional[str] = Field(None, description="指定 AI 模型 (可选)")
     stream: bool = Field(True, description="是否使用流式响应 (SSE)")
-    date_range: str = Field("daily", description="日期范围: daily, weekly, monthly 或 YYYY-MM-DD")
+    date_range: str = Field("daily", description="日期范围: daily, weekly 或 YYYY-MM-DD (最大7天)")
     preset: Optional[str] = Field(None, description="预设组名称")
 
 
@@ -136,6 +180,28 @@ async def create_briefing(request: BriefingRequest):
 
     except Exception as e:
         logger.error(f"API Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/search")
+async def search_news(request: SearchRequest):
+    """
+    搜索新闻
+    
+    根据关键词和日期范围搜索
+    """
+    if not service:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        return await service.search_news(
+            query=request.query,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            platform_ids=request.platforms
+        )
+    except Exception as e:
+        logger.error(f"Search API Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -235,6 +301,23 @@ async def get_presets():
         return {"presets": presets}
     except Exception as e:
         logger.error(f"Error loading presets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/reload")
+async def reload_config():
+    """
+    热重载配置
+    
+    重新加载 config.yaml 和依赖组件
+    """
+    if not service:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        return service.reload_config()
+    except Exception as e:
+        logger.error(f"Reload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

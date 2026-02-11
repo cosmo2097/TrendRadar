@@ -1,0 +1,25 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# 安装依赖
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 复制 Briefing Server 代码
+COPY briefing_server/ ./briefing_server/
+# 复制 trendradar 核心模块 (依赖)
+COPY trendradar/ ./trendradar/
+
+# 创建必要目录
+RUN mkdir -p /app/config /app/output
+
+ENV PYTHONUNBUFFERED=1 \
+    CONFIG_PATH=/app/config/config.yaml \
+    FREQUENCY_WORDS_PATH=/app/config/frequency_words.txt
+
+# Briefing Server 端口
+EXPOSE 8000
+
+# 启动 Briefing Server
+CMD ["python", "-m", "briefing_server.main"]
