@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.0">
+    <head>
+        <title>Subscriptions</title>
+    </head>
+    <body>
+        <outline text="钛媒体" type="rss" xmlUrl="http://192.168.203.118:8088/feed/2398235760.xml" htmlUrl="http://192.168.203.118:8088/feed/2398235760.xml" title="钛媒体"></outline>
+		<outline text="新浪科技" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3922413974.xml" htmlUrl="http://192.168.203.118:8088/feed/3922413974.xml" title="新浪科技"></outline>
+		<outline text="36氪" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3264997043.xml" htmlUrl="http://192.168.203.118:8088/feed/3264997043.xml" title="36氪"></outline>
+		<outline text="虎嗅APP" type="rss" xmlUrl="http://192.168.203.118:8088/feed/1432156401.xml" htmlUrl="http://192.168.203.118:8088/feed/1432156401.xml" title="虎嗅APP"></outline>
+		<outline text="嘶吼专业版" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3240650581.xml" htmlUrl="http://192.168.203.118:8088/feed/3240650581.xml" title="嘶吼专业版"></outline>
+		<outline text="安全客" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3098044160.xml" htmlUrl="http://192.168.203.118:8088/feed/3098044160.xml" title="安全客"></outline>
+		<outline text="吴晓波频道" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3079395914.xml" htmlUrl="http://192.168.203.118:8088/feed/3079395914.xml" title="吴晓波频道"></outline>
+		<outline text="半佛仙人" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3921643922.xml" htmlUrl="http://192.168.203.118:8088/feed/3921643922.xml" title="半佛仙人"></outline>
+		<outline text="新闻战线" type="rss" xmlUrl="http://192.168.203.118:8088/feed/2396102307.xml" htmlUrl="http://192.168.203.118:8088/feed/2396102307.xml" title="新闻战线"></outline>
+		<outline text="传媒茶话会" type="rss" xmlUrl="http://192.168.203.118:8088/feed/3250589042.xml" htmlUrl="http://192.168.203.118:8088/feed/3250589042.xml" title="传媒茶话会"></outline>
+    </body>
+</opml>
