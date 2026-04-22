@@ -4,6 +4,7 @@ TrendRadar API 服务层
 提供 BriefingService 用于生成 AI 简报
 """
 import asyncio
+import json
 import logging
 import re
 import sqlite3
@@ -25,11 +26,72 @@ from trendradar.core.analyzer import count_rss_frequency
 from datetime import timedelta
 from litellm import completion # Import litellm directly for streaming
 from trendradar.utils.time import is_within_days, DEFAULT_TIMEZONE
-from mcp_server.utils.validators import validate_date_range
+
+try:
+    # 优先复用 MCP 的日期解析能力；独立部署 briefing_server 时该模块可能不存在。
+    from mcp_server.utils.validators import validate_date_range as _mcp_validate_date_range
+except ImportError:
+    _mcp_validate_date_range = None
 
 
 # 配置日志
 logger = logging.getLogger("trendradar.api")
+
+
+def _validate_date_range_compat(date_range: Optional[Union[Dict[str, str], str]]) -> Optional[Tuple[datetime, datetime]]:
+    """兼容版日期范围校验：优先 MCP，缺失时使用本地轻量解析。"""
+    if _mcp_validate_date_range is not None:
+        return _mcp_validate_date_range(date_range)
+
+    if date_range is None:
+        return None
+
+    if isinstance(date_range, dict):
+        start_str = str(date_range.get("start", "")).strip()
+        end_str = str(date_range.get("end", "")).strip()
+        if not start_str or not end_str:
+            raise ValueError("date_range must contain start and end")
+        start_dt = datetime.strptime(start_str, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_str, "%Y-%m-%d")
+        if start_dt > end_dt:
+            raise ValueError("start date cannot be later than end date")
+        return start_dt, end_dt
+
+    if isinstance(date_range, str):
+        raw = date_range.strip()
+        if not raw:
+            raise ValueError("date_range cannot be empty")
+
+        if raw.startswith("{") and raw.endswith("}"):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as err:
+                raise ValueError(f"invalid date_range JSON: {err}") from err
+            if not isinstance(parsed, dict):
+                raise ValueError("date_range JSON must be an object")
+            return _validate_date_range_compat(parsed)
+
+        today = datetime.now().date()
+        normalized = raw.lower()
+        if normalized in {"today", "今天"}:
+            dt = datetime.combine(today, datetime.min.time())
+            return dt, dt
+        if normalized in {"yesterday", "昨天"}:
+            dt = datetime.combine(today - timedelta(days=1), datetime.min.time())
+            return dt, dt
+        if normalized in {"last_week", "最近7天"}:
+            end = datetime.combine(today, datetime.min.time())
+            start = datetime.combine(today - timedelta(days=6), datetime.min.time())
+            return start, end
+        if normalized in {"last_month", "最近30天"}:
+            end = datetime.combine(today, datetime.min.time())
+            start = datetime.combine(today - timedelta(days=29), datetime.min.time())
+            return start, end
+
+        single = datetime.strptime(raw, "%Y-%m-%d")
+        return single, single
+
+    raise ValueError("date_range must be a dict or string")
 
 
 class BriefingService:
@@ -268,7 +330,7 @@ class BriefingService:
 
         if date_range is not None:
             try:
-                parsed_date_range = validate_date_range(date_range)
+                parsed_date_range = _validate_date_range_compat(date_range)
                 if not parsed_date_range:
                     raise ValueError("date_range is invalid")
                 start_dt, end_dt = parsed_date_range
