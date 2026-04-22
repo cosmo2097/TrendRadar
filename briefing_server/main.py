@@ -5,7 +5,6 @@ TrendRadar API 入口
 """
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
 from typing import AsyncGenerator, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -59,11 +58,19 @@ class SearchRequest(BaseModel):
     """新闻搜索请求"""
 
     query: Optional[str] = Field(None, description="搜索关键词")
-    start_date: Optional[str] = Field(None, description="开始日期 (YYYY-MM-DD), 默认为3天前")
-    end_date: Optional[str] = Field(None, description="结束日期 (YYYY-MM-DD), 默认为今天")
+    start_date: Optional[str] = Field(None, description="开始日期 (YYYY-MM-DD), 为空时自动使用最新可用日期")
+    end_date: Optional[str] = Field(None, description="结束日期 (YYYY-MM-DD), 为空时自动使用最新可用日期")
     platforms: Optional[List[str]] = Field(None, description="指定平台 ID 列表")
     preset: Optional[str] = Field(None, description="预设组名称")
     format: Optional[str] = Field("timeline", description="返回格式: group (按源分组) 或 timeline (按时间排序)")
+    source_type: Optional[str] = Field("all", description="数据源类型: all | hotlist | rss")
+    search_mode: Optional[str] = Field("keyword", description="搜索模式: keyword | fuzzy | entity")
+    sort_by: Optional[str] = Field("relevance", description="排序方式: relevance | weight | date")
+    limit: Optional[int] = Field(50, description="最大返回条数")
+    threshold: Optional[float] = Field(0.6, description="fuzzy 模式相似度阈值 (0~1)")
+    include_url: Optional[bool] = Field(True, description="是否返回链接字段")
+    use_synonyms: Optional[bool] = Field(True, description="是否启用同义词扩展")
+    query_aliases: Optional[List[str]] = Field(None, description="请求级同义词扩展，如 ['AI','AIGC']")
 
 
 class AnalysisRequest(BaseModel):
@@ -130,23 +137,26 @@ async def create_briefing(request: BriefingRequest):
 
 @app.post("/api/v1/search")
 async def search_news(request: SearchRequest):
-    """搜索新闻，默认查询最近 3 天数据。"""
+    """搜索新闻。未指定日期时，默认查询最新可用数据日期。"""
     if not service:
         raise HTTPException(status_code=503, detail="Service not initialized")
-
-    today = datetime.now().strftime("%Y-%m-%d")
-    three_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
-    start_date = request.start_date or three_days_ago
-    end_date = request.end_date or today
 
     try:
         return await service.search_news(
             query=request.query,
-            start_date=start_date,
-            end_date=end_date,
+            start_date=request.start_date,
+            end_date=request.end_date,
             platform_ids=request.platforms,
             preset=request.preset,
             result_format=request.format,
+            source_type=request.source_type or "all",
+            search_mode=request.search_mode or "keyword",
+            sort_by=request.sort_by or "relevance",
+            limit=request.limit if request.limit is not None else 50,
+            threshold=request.threshold if request.threshold is not None else 0.6,
+            include_url=True if request.include_url is None else bool(request.include_url),
+            use_synonyms=True if request.use_synonyms is None else bool(request.use_synonyms),
+            query_aliases=request.query_aliases,
         )
     except Exception as e:
         logger.error(f"Search API Error: {e}")

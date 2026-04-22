@@ -5,8 +5,13 @@ TrendRadar API 服务层
 """
 import asyncio
 import logging
+import re
+import os
+from pathlib import Path
+from difflib import SequenceMatcher
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
+import yaml
 
 from trendradar.core import load_config
 from trendradar.context import AppContext
@@ -37,6 +42,8 @@ class BriefingService:
         self.config = config
         self.ctx = AppContext(config)
         self.data_fetcher = DataFetcher(self.ctx.config["DEFAULT_PROXY"] if self.ctx.config["USE_PROXY"] else None)
+        self._search_synonyms_cache: Dict[str, List[str]] = {}
+        self._search_synonyms_mtime: float = 0.0
 
     def reload_config(self) -> Dict[str, Any]:
         """重新加载配置"""
@@ -45,6 +52,8 @@ class BriefingService:
         self.ctx = AppContext(self.config)
         # 重新初始化 data_fetcher
         self.data_fetcher = DataFetcher(self.ctx.config["DEFAULT_PROXY"] if self.ctx.config["USE_PROXY"] else None)
+        self._search_synonyms_cache = {}
+        self._search_synonyms_mtime = 0.0
         logger.info("Configuration reloaded successfully")
         return {"status": "success", "message": "Configuration reloaded"}
 
@@ -212,160 +221,383 @@ class BriefingService:
         end_date: str = None,
         platform_ids: Optional[List[str]] = None,
         preset: Optional[str] = None,
-        result_format: str = "timeline"
+        result_format: str = "timeline",
+        source_type: str = "all",
+        search_mode: str = "keyword",
+        sort_by: str = "relevance",
+        limit: int = 50,
+        threshold: float = 0.6,
+        include_url: bool = True,
+        use_synonyms: bool = True,
+        query_aliases: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        搜索新闻
-        """
-        # 验证: query 和 preset 至少有一个
-        if not query and not preset:
-             return {"success": False, "error": "Must provide either 'query' or 'preset'"}
-             
-        # 解析 preset 为 keywords
+        """搜索新闻（对齐 MCP 官方实现的核心逻辑）。"""
+        source_type = (source_type or "all").lower()
+        if source_type not in {"all", "hotlist", "rss"}:
+            return {"success": False, "error": {"code": "INVALID_SOURCE_TYPE", "message": "source_type must be one of: all, hotlist, rss"}}
+
+        search_mode = (search_mode or "keyword").lower()
+        if search_mode not in {"keyword", "fuzzy", "entity"}:
+            return {"success": False, "error": {"code": "INVALID_SEARCH_MODE", "message": "search_mode must be one of: keyword, fuzzy, entity"}}
+
+        sort_by = (sort_by or "relevance").lower()
+        if sort_by not in {"relevance", "weight", "date"}:
+            return {"success": False, "error": {"code": "INVALID_SORT_BY", "message": "sort_by must be one of: relevance, weight, date"}}
+
+        result_format = (result_format or "timeline").lower()
+        if result_format not in {"timeline", "group"}:
+            return {"success": False, "error": {"code": "INVALID_FORMAT", "message": "format must be one of: timeline, group"}}
+
+        if not isinstance(limit, int) or limit <= 0 or limit > 1000:
+            return {"success": False, "error": {"code": "INVALID_LIMIT", "message": "limit must be an integer between 1 and 1000"}}
+
+        if not isinstance(threshold, (int, float)) or threshold < 0 or threshold > 1:
+            return {"success": False, "error": {"code": "INVALID_THRESHOLD", "message": "threshold must be between 0 and 1"}}
+
+        normalized_query = (query or "").strip()
+        if not normalized_query and not preset:
+            return {"success": False, "error": {"code": "MISSING_QUERY", "message": "Must provide either 'query' or 'preset'"}}
+
         include_regex = None
         if preset:
-             groups, _, _ = load_frequency_words()
-             for g in groups:
-                 if g.get("display_name") == preset:
-                     include_regex = g.get("group_key")
-                     break
-             if not include_regex:
-                 return {
+            groups, _, _ = load_frequency_words()
+            for group in groups:
+                if group.get("display_name") == preset:
+                    include_regex = group.get("group_key")
+                    break
+            if not include_regex:
+                return {
                     "success": True,
-                    "query": query,
+                    "query": normalized_query,
                     "preset": preset,
-                    "date_range": f"{start_date} to {end_date}",
                     "total": 0,
                     "results": [],
-                    "message": f"Preset '{preset}' not found"
-                 }
-            
+                    "data": [],
+                    "message": f"Preset '{preset}' not found",
+                }
+
+        try:
+            resolved_start, resolved_end = self._resolve_search_dates(start_date, end_date, source_type)
+        except ValueError as err:
+            return {"success": False, "error": {"code": "INVALID_DATE_RANGE", "message": str(err)}}
+
+        # 不做 query 下推，避免提前过滤掉同义词候选（如“人工智能”->“AI”）。
+        pushdown_query = None
         all_results, id_to_name, title_info, rss_items = await self._fetch_all_data(
             allowed_sources=platform_ids,
-            start_date=start_date,
-            end_date=end_date,
-            query=query,
-            include_regex=include_regex
+            start_date=resolved_start,
+            end_date=resolved_end,
+            query=pushdown_query,
+            include_regex=include_regex,
         )
-        
-        # 格式化结果
-        results = []
-        total_count = 0
-        
-        if result_format == "timeline":
-             timeline_items = []
 
-             # 1. Hotlist items
-             for source_id, titles in all_results.items():
-                 source_name = id_to_name.get(source_id, source_id)
-                 source_info = title_info.get(source_id, {})
-                 for title, ranks in titles.items():
-                     info = source_info.get(title, {})
-                     timeline_items.append({
-                         "title": title,
-                         "url": info.get("url", "") or info.get("mobileUrl", ""),
-                         "source_name": source_name,
-                         "source_id": source_id,
-                         "type": "hotlist",
-                         "published_at": end_date, # Fallback to end_date as hotlist items don't have precise time
-                         "ranks": ranks,
-                         "summary": ""
-                     })
+        if source_type == "hotlist":
+            rss_items = []
+        elif source_type == "rss":
+            all_results, id_to_name, title_info = {}, {}, {}
 
-             # 2. RSS items
-             for item in rss_items:
-                 timeline_items.append({
-                     "title": item["title"],
-                     "url": item["url"],
-                     "source_name": item["feed_name"],
-                     "source_id": item["feed_id"],
-                     "type": "rss",
-                     "published_at": item.get("published_at", ""),
-                     "summary": item.get("summary", "")
-                 })
-             
-             # Sort by published_at desc (robust datetime parsing for mixed formats)
-             def parse_time(t_str: Optional[str]) -> datetime:
-                 if not t_str:
-                     return datetime.min
+        matches: List[Dict[str, Any]] = []
 
-                 try:
-                     from dateutil import parser as date_parser
-
-                     dt = date_parser.parse(t_str)
-                     if dt.tzinfo is not None:
-                         return dt.astimezone(self.ctx.get_time().tzinfo).replace(tzinfo=None)
-                     return dt
-                 except Exception:
-                     try:
-                         return datetime.strptime(t_str, "%Y-%m-%d")
-                     except Exception:
-                         return datetime.min
-
-             timeline_items.sort(key=lambda x: parse_time(x.get("published_at")), reverse=True)
-             results = timeline_items
-             total_count = len(results)
-
-        else:
-            # 1. 处理热榜新闻
-            for source_id, titles in all_results.items():
-                if not titles:
+        for source_id, titles in all_results.items():
+            source_name = id_to_name.get(source_id, source_id)
+            source_info = title_info.get(source_id, {})
+            for title, payload in titles.items():
+                matched, score = self._match_title(
+                    title, normalized_query, search_mode, float(threshold), use_synonyms=use_synonyms, query_aliases=query_aliases
+                )
+                if not matched:
                     continue
-                
-                source_name = id_to_name.get(source_id, source_id)
-                source_info = title_info.get(source_id, {})
-                
-                items = []
-                for title, ranks in titles.items():
-                    info = source_info.get(title, {})
-                    items.append({
-                        "title": title,
-                        "url": info.get("url", ""),
-                        "ranks": ranks,
-                        "mobileUrl": info.get("mobileUrl", "")
-                    })
-                
-                if items:
-                    results.append({
-                        "source_id": source_id,
-                        "source_name": source_name,
-                        "type": "hotlist",
-                        "count": len(items),
-                        "items": items
-                    })
-                    total_count += len(items)
-            
-            # 2. 处理 RSS 结果
-            rss_grouped = {}
-            for item in rss_items:
-                fid = item["feed_id"]
-                if fid not in rss_grouped:
-                    rss_grouped[fid] = {
-                        "source_id": fid,
-                        "source_name": item["feed_name"],
-                        "type": "rss",
-                        "items": []
+
+                info = source_info.get(title, {})
+                ranks = info.get("ranks", payload.get("ranks", [])) or []
+                rank = ranks[0] if ranks else 999
+                count = max(1, int(info.get("count", len(ranks) or 1)))
+                published_at = info.get("first_time") or resolved_end
+                item = {
+                    "title": title,
+                    "source_name": source_name,
+                    "source_id": source_id,
+                    "type": "hotlist",
+                    "published_at": published_at,
+                    "date": str(published_at)[:10] if published_at else resolved_end,
+                    "ranks": ranks,
+                    "count": count,
+                    "rank": rank,
+                    "summary": "",
+                    "similarity_score": round(score, 4),
+                    "weight_score": count * 1000 + (1000 - min(rank, 1000)),
+                }
+                if include_url:
+                    item["url"] = info.get("url", "") or info.get("mobileUrl", "")
+                    item["mobileUrl"] = info.get("mobileUrl", "")
+                matches.append(item)
+
+        for rss in rss_items:
+            title = rss.get("title", "")
+            matched, score = self._match_title(
+                title, normalized_query, search_mode, float(threshold), use_synonyms=use_synonyms, query_aliases=query_aliases
+            )
+            if not matched:
+                continue
+
+            published_at = rss.get("published_at", "")
+            item = {
+                "title": title,
+                "source_name": rss.get("feed_name", rss.get("feed_id", "")),
+                "source_id": rss.get("feed_id", ""),
+                "type": "rss",
+                "published_at": published_at,
+                "date": str(published_at)[:10] if published_at else resolved_end,
+                "ranks": [],
+                "count": 1,
+                "rank": 999,
+                "summary": rss.get("summary", ""),
+                "similarity_score": round(score, 4),
+                "weight_score": score * 1000,
+            }
+            if include_url:
+                item["url"] = rss.get("url", "")
+                item["mobileUrl"] = ""
+            matches.append(item)
+
+        if sort_by == "date":
+            matches.sort(key=lambda x: self._parse_sort_time(x.get("published_at")), reverse=True)
+        elif sort_by == "weight":
+            matches.sort(key=lambda x: x.get("weight_score", 0), reverse=True)
+        else:
+            matches.sort(
+                key=lambda x: (
+                    x.get("similarity_score", 0),
+                    x.get("weight_score", 0),
+                    -x.get("rank", 999),
+                ),
+                reverse=True,
+            )
+
+        total_found = len(matches)
+        limited = matches[:limit]
+
+        if result_format == "group":
+            grouped: Dict[str, Dict[str, Any]] = {}
+            for item in limited:
+                key = item["source_id"]
+                if key not in grouped:
+                    grouped[key] = {
+                        "source_id": item["source_id"],
+                        "source_name": item["source_name"],
+                        "type": item["type"],
+                        "items": [],
                     }
-                rss_grouped[fid]["items"].append({
-                    "title": item["title"],
-                    "url": item["url"],
-                    "published_at": item.get("published_at"),
-                    "summary": item.get("summary")
-                })
-                
-            for group in rss_grouped.values():
+                grouped[key]["items"].append(item)
+            data: List[Dict[str, Any]] = list(grouped.values())
+            for group in data:
                 group["count"] = len(group["items"])
-                results.append(group)
-                total_count += len(group["items"])
-                
+        else:
+            data = limited
+
+        if not matches:
+            earliest, latest = self._get_available_date_range(source_type)
+            if earliest and latest:
+                available = f"{earliest.strftime('%Y-%m-%d')} 至 {latest.strftime('%Y-%m-%d')}"
+                msg = f"未找到匹配的新闻（查询范围: {resolved_start} 至 {resolved_end}，可用数据: {available}）"
+            else:
+                msg = f"未找到匹配的新闻（查询范围: {resolved_start} 至 {resolved_end}）"
+        else:
+            msg = ""
+
+        summary = {
+            "description": f"新闻搜索结果（{search_mode}模式）",
+            "total_found": total_found,
+            "returned": len(limited),
+            "requested_limit": limit,
+            "search_mode": search_mode,
+            "query": normalized_query,
+            "preset": preset,
+            "platforms": platform_ids or "所有平台",
+            "time_range": f"{resolved_start} 至 {resolved_end}",
+            "sort_by": sort_by,
+            "source_type": source_type,
+            "format": result_format,
+        }
+        if search_mode == "fuzzy":
+            summary["threshold"] = threshold
+
         return {
             "success": True,
-            "query": query,
+            "summary": summary,
+            "data": data,
+            "query": normalized_query,
             "preset": preset,
-            "date_range": f"{start_date} to {end_date}",
-            "total": total_count,
-            "results": results
+            "date_range": f"{resolved_start} to {resolved_end}",
+            "total": len(limited),
+            "total_found": total_found,
+            "results": data,
+            "message": msg,
         }
+
+    def _match_title(
+        self,
+        title: str,
+        query: str,
+        search_mode: str,
+        threshold: float,
+        use_synonyms: bool = True,
+        query_aliases: Optional[List[str]] = None,
+    ) -> Tuple[bool, float]:
+        if not query:
+            return True, 1.0
+
+        title_lower = title.lower()
+        query_lower = query.lower()
+        terms = self._expand_query_terms(query_lower, use_synonyms=use_synonyms, query_aliases=query_aliases)
+
+        if search_mode == "keyword":
+            if query_lower in title_lower:
+                return True, 1.0
+            for term in terms:
+                if term in title_lower:
+                    return True, 0.95
+            return False, 0.0
+
+        if search_mode == "fuzzy":
+            score = max(SequenceMatcher(None, term, title_lower).ratio() for term in terms)
+            return score >= threshold, score
+
+        # entity 模式: 先用子串匹配，其次按词项命中率估算相关度
+        for term in terms:
+            if term in title_lower:
+                return True, 1.0
+
+        tokens = []
+        for term in terms:
+            tokens.extend([token for token in re.split(r"\\s+", term) if token])
+        if not tokens:
+            return False, 0.0
+
+        hit = sum(1 for token in tokens if token in title_lower)
+        score = hit / len(tokens)
+        return score > 0, score
+
+    def _expand_query_terms(self, query_lower: str, use_synonyms: bool = True, query_aliases: Optional[List[str]] = None) -> List[str]:
+        terms = {query_lower}
+        if use_synonyms:
+            for key, aliases in self._load_search_synonyms().items():
+                if key in query_lower:
+                    terms.update(aliases)
+        if query_aliases:
+            terms.update([str(alias).lower() for alias in query_aliases if str(alias).strip()])
+        return [t.strip().lower() for t in terms if t and t.strip()]
+
+    def _search_synonyms_path(self) -> Path:
+        env_path = os.environ.get("SEARCH_SYNONYMS_FILE")
+        if env_path:
+            return Path(env_path)
+        # 默认使用项目配置文件，可按需热更新
+        return Path("config/search_synonyms.yaml")
+
+    def _load_search_synonyms(self) -> Dict[str, List[str]]:
+        path = self._search_synonyms_path()
+        if not path.exists():
+            return {}
+        try:
+            mtime = path.stat().st_mtime
+            if self._search_synonyms_cache and mtime == self._search_synonyms_mtime:
+                return self._search_synonyms_cache
+
+            with open(path, "r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+
+            synonyms: Dict[str, List[str]] = {}
+            if isinstance(raw, dict):
+                for key, value in raw.items():
+                    if not isinstance(key, str):
+                        continue
+                    if isinstance(value, list):
+                        aliases = [str(item).strip().lower() for item in value if str(item).strip()]
+                    elif isinstance(value, str):
+                        aliases = [value.strip().lower()] if value.strip() else []
+                    else:
+                        aliases = []
+                    if aliases:
+                        synonyms[key.strip().lower()] = aliases
+
+            self._search_synonyms_cache = synonyms
+            self._search_synonyms_mtime = mtime
+            return synonyms
+        except Exception as err:
+            logger.warning(f"Failed to load search synonyms from {path}: {err}")
+            return {}
+
+    def _parse_sort_time(self, value: Optional[str]) -> datetime:
+        if not value:
+            return datetime.min
+        try:
+            from dateutil import parser as date_parser
+
+            dt = date_parser.parse(value)
+            if dt.tzinfo is not None:
+                return dt.astimezone(self.ctx.get_time().tzinfo).replace(tzinfo=None)
+            return dt
+        except Exception:
+            try:
+                return datetime.strptime(value, "%Y-%m-%d")
+            except Exception:
+                return datetime.min
+
+    def _available_dates(self, db_type: str) -> List[datetime]:
+        base = Path(__file__).resolve().parent.parent / "output" / db_type
+        if not base.exists():
+            return []
+        dates: List[datetime] = []
+        for file in base.glob("*.db"):
+            try:
+                dates.append(datetime.strptime(file.stem, "%Y-%m-%d"))
+            except ValueError:
+                continue
+        dates.sort()
+        return dates
+
+    def _get_available_date_range(self, source_type: str = "all") -> Tuple[Optional[datetime], Optional[datetime]]:
+        source_type = (source_type or "all").lower()
+        if source_type == "hotlist":
+            dates = self._available_dates("news")
+        elif source_type == "rss":
+            dates = self._available_dates("rss")
+        else:
+            dates = sorted(self._available_dates("news") + self._available_dates("rss"))
+
+        if not dates:
+            return None, None
+        return dates[0], dates[-1]
+
+    def _resolve_search_dates(self, start_date: Optional[str], end_date: Optional[str], source_type: str) -> Tuple[str, str]:
+        now_date = self.ctx.get_time().date()
+        earliest, latest = self._get_available_date_range(source_type)
+
+        if not start_date and not end_date:
+            if latest is None:
+                raise ValueError("output 目录下没有可用的新闻数据")
+            target = latest.strftime("%Y-%m-%d")
+            return target, target
+
+        if start_date and not end_date:
+            end_date = start_date
+        elif end_date and not start_date:
+            start_date = end_date
+
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        except Exception:
+            raise ValueError("日期格式错误，请使用 YYYY-MM-DD")
+
+        if start_dt > end_dt:
+            raise ValueError("开始日期不能晚于结束日期")
+
+        if start_dt.date() > now_date or end_dt.date() > now_date:
+            raise ValueError(f"不允许查询未来日期（当前日期: {now_date.strftime('%Y-%m-%d')}）")
+
+        return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
 
     async def analyze_briefing_data(
         self,
