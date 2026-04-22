@@ -14,15 +14,13 @@ from trendradar.crawler import DataFetcher
 from trendradar.crawler.rss import RSSFetcher, RSSFeedConfig
 # from trendradar.core.frequency import parse_frequency_rules # Removed
 from briefing_server.utils import parse_frequency_rules # Use local util
-from briefing_server.utils import parse_frequency_rules # Use local util
 from briefing_server.data import get_titles_by_date_range, get_rss_by_date_range # Import local data agg
 from trendradar.core.frequency import load_frequency_words # Import frequency loader
-from trendradar.ai import AIAnalyzer, AIAnalysisResult
-from trendradar.ai import AIAnalyzer, AIAnalysisResult
-from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats, count_rss_frequency
+from trendradar.ai import AIAnalyzer
+from trendradar.core.analyzer import count_rss_frequency
 from datetime import timedelta
 from litellm import completion # Import litellm directly for streaming
-from trendradar.utils.time import is_within_days, DEFAULT_TIMEZONE, calculate_days_old
+from trendradar.utils.time import is_within_days, DEFAULT_TIMEZONE
 
 
 # 配置日志
@@ -286,12 +284,25 @@ class BriefingService:
                      "summary": item.get("summary", "")
                  })
              
-             # Sort by published_at desc
-             def parse_time(t_str):
-                 if not t_str: return ""
-                 return t_str
-             
-             timeline_items.sort(key=lambda x: parse_time(x.get("published_at")) or "", reverse=True)
+             # Sort by published_at desc (robust datetime parsing for mixed formats)
+             def parse_time(t_str: Optional[str]) -> datetime:
+                 if not t_str:
+                     return datetime.min
+
+                 try:
+                     from dateutil import parser as date_parser
+
+                     dt = date_parser.parse(t_str)
+                     if dt.tzinfo is not None:
+                         return dt.astimezone(self.ctx.get_time().tzinfo).replace(tzinfo=None)
+                     return dt
+                 except Exception:
+                     try:
+                         return datetime.strptime(t_str, "%Y-%m-%d")
+                     except Exception:
+                         return datetime.min
+
+             timeline_items.sort(key=lambda x: parse_time(x.get("published_at")), reverse=True)
              results = timeline_items
              total_count = len(results)
 
@@ -695,8 +706,27 @@ class BriefingService:
                 stats, rss_stats
             )
         except AttributeError:
-             yield "Error: TrendRadar Core version mismatch."
-             return
+            # 兜底：如果上游移除了私有方法，退化为非流式分析后一次性输出
+            logger.warning("AIAnalyzer._prepare_news_content not found, fallback to non-stream analyze")
+            result = await asyncio.to_thread(
+                analyzer.analyze,
+                stats,
+                rss_stats,
+                date_range,
+                "定制简报",
+                platforms,
+                keywords,
+            )
+            content = (result.core_trends or "").strip()
+            if content:
+                yield content
+            elif getattr(result, "skipped", False):
+                yield "今日无相关动态。"
+            elif result.error:
+                yield f"[AI 生成失败: {result.error}]"
+            else:
+                yield "今日无相关动态。"
+            return
         
         if not news_content and not rss_content:
             yield "今日无相关动态。"
