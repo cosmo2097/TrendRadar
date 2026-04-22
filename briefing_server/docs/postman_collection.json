@@ -1,0 +1,267 @@
+{
+  "info": {
+    "name": "TrendRadar Briefing Server API",
+    "description": "TrendRadar Briefing Server 接口集合。导入后请先设置 baseUrl（默认 http://127.0.0.1:8000）。",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "health"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Presets",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/presets",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "presets"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Sources",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/sources",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "sources"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Reload Config",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/reload",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "reload"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Search News",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"query\": \"人工智能 AI AIGC\",\n  \"preset\": \"人工智能简报\",\n  \"date_range\": {\n    \"start\": \"2026-04-15\",\n    \"end\": \"2026-04-22\"\n  },\n  \"platforms\": null,\n  \"search_mode\": \"keyword\",\n  \"sort_by\": \"relevance\",\n  \"limit\": 50,\n  \"rss_limit\": 20,\n  \"threshold\": 0.6,\n  \"include_url\": false,\n  \"include_rss\": false\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/search",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "search"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Create Briefing (Non-Stream)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rules\": [],\n  \"preset\": \"AI\",\n  \"allowed_sources\": null,\n  \"custom_rss_urls\": null,\n  \"stream\": false,\n  \"ai_model\": null,\n  \"date_range\": \"daily\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/briefing",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "briefing"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Create Briefing (Stream SSE)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "text/event-stream"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rules\": [],\n  \"preset\": \"AI\",\n  \"allowed_sources\": null,\n  \"custom_rss_urls\": null,\n  \"stream\": true,\n  \"ai_model\": null,\n  \"date_range\": \"daily\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/briefing",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "briefing"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Briefing Data",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"rules\": [],\n  \"preset\": \"AI\",\n  \"allowed_sources\": null,\n  \"custom_rss_urls\": null,\n  \"stream\": false,\n  \"ai_model\": null,\n  \"date_range\": \"daily\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/briefing/data",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "briefing",
+            "data"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Analyze Briefing (Non-Stream)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"stats\": [],\n  \"rss_stats\": [],\n  \"ai_model\": null,\n  \"stream\": false,\n  \"date_range\": \"daily\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/briefing/analyze",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "briefing",
+            "analyze"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Analyze Briefing (Stream SSE)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "text/event-stream"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"stats\": [],\n  \"rss_stats\": [],\n  \"ai_model\": null,\n  \"stream\": true,\n  \"date_range\": \"daily\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/v1/briefing/analyze",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "v1",
+            "briefing",
+            "analyze"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://127.0.0.1:8000"
+    }
+  ]
+}

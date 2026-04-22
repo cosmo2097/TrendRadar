@@ -6,12 +6,11 @@ TrendRadar API 服务层
 import asyncio
 import logging
 import re
-import os
+import sqlite3
 from pathlib import Path
 from difflib import SequenceMatcher
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Union
 from datetime import datetime
-import yaml
 
 from trendradar.core import load_config
 from trendradar.context import AppContext
@@ -20,12 +19,13 @@ from trendradar.crawler.rss import RSSFetcher, RSSFeedConfig
 # from trendradar.core.frequency import parse_frequency_rules # Removed
 from briefing_server.utils import parse_frequency_rules # Use local util
 from briefing_server.data import get_titles_by_date_range, get_rss_by_date_range # Import local data agg
-from trendradar.core.frequency import load_frequency_words # Import frequency loader
+from trendradar.core.frequency import load_frequency_words, matches_word_groups # Import frequency loader
 from trendradar.ai import AIAnalyzer
 from trendradar.core.analyzer import count_rss_frequency
 from datetime import timedelta
 from litellm import completion # Import litellm directly for streaming
 from trendradar.utils.time import is_within_days, DEFAULT_TIMEZONE
+from mcp_server.utils.validators import validate_date_range
 
 
 # 配置日志
@@ -42,8 +42,6 @@ class BriefingService:
         self.config = config
         self.ctx = AppContext(config)
         self.data_fetcher = DataFetcher(self.ctx.config["DEFAULT_PROXY"] if self.ctx.config["USE_PROXY"] else None)
-        self._search_synonyms_cache: Dict[str, List[str]] = {}
-        self._search_synonyms_mtime: float = 0.0
 
     def reload_config(self) -> Dict[str, Any]:
         """重新加载配置"""
@@ -52,8 +50,6 @@ class BriefingService:
         self.ctx = AppContext(self.config)
         # 重新初始化 data_fetcher
         self.data_fetcher = DataFetcher(self.ctx.config["DEFAULT_PROXY"] if self.ctx.config["USE_PROXY"] else None)
-        self._search_synonyms_cache = {}
-        self._search_synonyms_mtime = 0.0
         logger.info("Configuration reloaded successfully")
         return {"status": "success", "message": "Configuration reloaded"}
 
@@ -217,25 +213,18 @@ class BriefingService:
     async def search_news(
         self,
         query: Optional[str] = None,
-        start_date: str = None,
-        end_date: str = None,
-        platform_ids: Optional[List[str]] = None,
+        date_range: Optional[Union[Dict[str, str], str]] = None,
+        platforms: Optional[List[str]] = None,
         preset: Optional[str] = None,
-        result_format: str = "timeline",
-        source_type: str = "all",
         search_mode: str = "keyword",
         sort_by: str = "relevance",
         limit: int = 50,
         threshold: float = 0.6,
-        include_url: bool = True,
-        use_synonyms: bool = True,
-        query_aliases: Optional[List[str]] = None,
+        include_url: bool = False,
+        include_rss: bool = False,
+        rss_limit: int = 20,
     ) -> Dict[str, Any]:
-        """搜索新闻（对齐 MCP 官方实现的核心逻辑）。"""
-        source_type = (source_type or "all").lower()
-        if source_type not in {"all", "hotlist", "rss"}:
-            return {"success": False, "error": {"code": "INVALID_SOURCE_TYPE", "message": "source_type must be one of: all, hotlist, rss"}}
-
+        """搜索新闻（参数与输出结构对齐 MCP search_news）。"""
         search_mode = (search_mode or "keyword").lower()
         if search_mode not in {"keyword", "fuzzy", "entity"}:
             return {"success": False, "error": {"code": "INVALID_SEARCH_MODE", "message": "search_mode must be one of: keyword, fuzzy, entity"}}
@@ -244,57 +233,65 @@ class BriefingService:
         if sort_by not in {"relevance", "weight", "date"}:
             return {"success": False, "error": {"code": "INVALID_SORT_BY", "message": "sort_by must be one of: relevance, weight, date"}}
 
-        result_format = (result_format or "timeline").lower()
-        if result_format not in {"timeline", "group"}:
-            return {"success": False, "error": {"code": "INVALID_FORMAT", "message": "format must be one of: timeline, group"}}
-
         if not isinstance(limit, int) or limit <= 0 or limit > 1000:
             return {"success": False, "error": {"code": "INVALID_LIMIT", "message": "limit must be an integer between 1 and 1000"}}
+
+        if not isinstance(rss_limit, int) or rss_limit <= 0 or rss_limit > 1000:
+            return {"success": False, "error": {"code": "INVALID_RSS_LIMIT", "message": "rss_limit must be an integer between 1 and 1000"}}
 
         if not isinstance(threshold, (int, float)) or threshold < 0 or threshold > 1:
             return {"success": False, "error": {"code": "INVALID_THRESHOLD", "message": "threshold must be between 0 and 1"}}
 
         normalized_query = (query or "").strip()
         if not normalized_query and not preset:
-            return {"success": False, "error": {"code": "MISSING_QUERY", "message": "Must provide either 'query' or 'preset'"}}
+            return {"success": False, "error": {"code": "MISSING_QUERY", "message": "query is required when preset is not provided"}}
 
-        include_regex = None
+        preset_group: Optional[Dict[str, Any]] = None
+        preset_filter_words: List[Any] = []
+        preset_global_filters: List[str] = []
         if preset:
-            groups, _, _ = load_frequency_words()
+            groups, filter_words, global_filters = load_frequency_words()
             for group in groups:
                 if group.get("display_name") == preset:
-                    include_regex = group.get("group_key")
+                    preset_group = group
+                    preset_filter_words = filter_words or []
+                    preset_global_filters = global_filters or []
                     break
-            if not include_regex:
+            if not preset_group:
                 return {
-                    "success": True,
-                    "query": normalized_query,
-                    "preset": preset,
-                    "total": 0,
-                    "results": [],
-                    "data": [],
-                    "message": f"Preset '{preset}' not found",
+                    "success": False,
+                    "error": {
+                        "code": "PRESET_NOT_FOUND",
+                        "message": f"Preset '{preset}' not found",
+                    },
                 }
 
-        try:
-            resolved_start, resolved_end = self._resolve_search_dates(start_date, end_date, source_type)
-        except ValueError as err:
-            return {"success": False, "error": {"code": "INVALID_DATE_RANGE", "message": str(err)}}
+        if date_range is not None:
+            try:
+                parsed_date_range = validate_date_range(date_range)
+                if not parsed_date_range:
+                    raise ValueError("date_range is invalid")
+                start_dt, end_dt = parsed_date_range
+                resolved_start = start_dt.strftime("%Y-%m-%d")
+                resolved_end = end_dt.strftime("%Y-%m-%d")
+            except Exception as err:
+                return {"success": False, "error": {"code": "INVALID_DATE_RANGE", "message": str(err)}}
+        else:
+            try:
+                # MCP 默认仅搜索热榜，日期默认使用热榜最新可用日期。
+                resolved_start, resolved_end = self._resolve_search_dates(None, None, "hotlist")
+            except ValueError as err:
+                return {"success": False, "error": {"code": "INVALID_DATE_RANGE", "message": str(err)}}
 
         # 不做 query 下推，避免提前过滤掉同义词候选（如“人工智能”->“AI”）。
         pushdown_query = None
         all_results, id_to_name, title_info, rss_items = await self._fetch_all_data(
-            allowed_sources=platform_ids,
+            allowed_sources=platforms,
             start_date=resolved_start,
             end_date=resolved_end,
             query=pushdown_query,
-            include_regex=include_regex,
+            include_regex=None,
         )
-
-        if source_type == "hotlist":
-            rss_items = []
-        elif source_type == "rss":
-            all_results, id_to_name, title_info = {}, {}, {}
 
         matches: List[Dict[str, Any]] = []
 
@@ -303,23 +300,30 @@ class BriefingService:
             source_info = title_info.get(source_id, {})
             for title, payload in titles.items():
                 matched, score = self._match_title(
-                    title, normalized_query, search_mode, float(threshold), use_synonyms=use_synonyms, query_aliases=query_aliases
+                    title, normalized_query, search_mode, float(threshold)
                 )
                 if not matched:
+                    continue
+                if preset_group and not matches_word_groups(
+                    title,
+                    [preset_group],
+                    preset_filter_words,
+                    preset_global_filters,
+                ):
                     continue
 
                 info = source_info.get(title, {})
                 ranks = info.get("ranks", payload.get("ranks", [])) or []
                 rank = ranks[0] if ranks else 999
                 count = max(1, int(info.get("count", len(ranks) or 1)))
-                published_at = info.get("first_time") or resolved_end
+                item_date = info.get("last_date") or resolved_end
+                published_at = self._normalize_published_at(info.get("last_time"), item_date)
                 item = {
                     "title": title,
-                    "source_name": source_name,
-                    "source_id": source_id,
-                    "type": "hotlist",
+                    "platform": source_id,
+                    "platform_name": source_name,
                     "published_at": published_at,
-                    "date": str(published_at)[:10] if published_at else resolved_end,
+                    "date": item_date,
                     "ranks": ranks,
                     "count": count,
                     "rank": rank,
@@ -331,34 +335,6 @@ class BriefingService:
                     item["url"] = info.get("url", "") or info.get("mobileUrl", "")
                     item["mobileUrl"] = info.get("mobileUrl", "")
                 matches.append(item)
-
-        for rss in rss_items:
-            title = rss.get("title", "")
-            matched, score = self._match_title(
-                title, normalized_query, search_mode, float(threshold), use_synonyms=use_synonyms, query_aliases=query_aliases
-            )
-            if not matched:
-                continue
-
-            published_at = rss.get("published_at", "")
-            item = {
-                "title": title,
-                "source_name": rss.get("feed_name", rss.get("feed_id", "")),
-                "source_id": rss.get("feed_id", ""),
-                "type": "rss",
-                "published_at": published_at,
-                "date": str(published_at)[:10] if published_at else resolved_end,
-                "ranks": [],
-                "count": 1,
-                "rank": 999,
-                "summary": rss.get("summary", ""),
-                "similarity_score": round(score, 4),
-                "weight_score": score * 1000,
-            }
-            if include_url:
-                item["url"] = rss.get("url", "")
-                item["mobileUrl"] = ""
-            matches.append(item)
 
         if sort_by == "date":
             matches.sort(key=lambda x: self._parse_sort_time(x.get("published_at")), reverse=True)
@@ -377,63 +353,100 @@ class BriefingService:
         total_found = len(matches)
         limited = matches[:limit]
 
-        if result_format == "group":
-            grouped: Dict[str, Dict[str, Any]] = {}
-            for item in limited:
-                key = item["source_id"]
-                if key not in grouped:
-                    grouped[key] = {
-                        "source_id": item["source_id"],
-                        "source_name": item["source_name"],
-                        "type": item["type"],
-                        "items": [],
-                    }
-                grouped[key]["items"].append(item)
-            data: List[Dict[str, Any]] = list(grouped.values())
-            for group in data:
-                group["count"] = len(group["items"])
+        try:
+            current = self.ctx.get_time().date()
+        except Exception:
+            current = datetime.now().date()
+        if resolved_start == resolved_end and resolved_start == current.strftime("%Y-%m-%d"):
+            time_range_desc = "今天"
+        elif resolved_start == resolved_end:
+            time_range_desc = resolved_start
         else:
-            data = limited
+            time_range_desc = f"{resolved_start} 至 {resolved_end}"
 
         if not matches:
-            earliest, latest = self._get_available_date_range(source_type)
+            earliest, latest = self._get_available_date_range("hotlist")
             if earliest and latest:
                 available = f"{earliest.strftime('%Y-%m-%d')} 至 {latest.strftime('%Y-%m-%d')}"
-                msg = f"未找到匹配的新闻（查询范围: {resolved_start} 至 {resolved_end}，可用数据: {available}）"
+                msg = f"未找到匹配的新闻（查询范围: {time_range_desc}，可用数据: {available}）"
             else:
-                msg = f"未找到匹配的新闻（查询范围: {resolved_start} 至 {resolved_end}）"
-        else:
-            msg = ""
+                msg = f"未找到匹配的新闻（{time_range_desc}）"
+            return {
+                "success": True,
+                "results": [],
+                "total": 0,
+                "query": normalized_query,
+                "search_mode": search_mode,
+                "time_range": time_range_desc,
+                "message": msg,
+            }
 
-        summary = {
-            "description": f"新闻搜索结果（{search_mode}模式）",
-            "total_found": total_found,
-            "returned": len(limited),
-            "requested_limit": limit,
-            "search_mode": search_mode,
-            "query": normalized_query,
-            "preset": preset,
-            "platforms": platform_ids or "所有平台",
-            "time_range": f"{resolved_start} 至 {resolved_end}",
-            "sort_by": sort_by,
-            "source_type": source_type,
-            "format": result_format,
-        }
-        if search_mode == "fuzzy":
-            summary["threshold"] = threshold
-
-        return {
+        result: Dict[str, Any] = {
             "success": True,
-            "summary": summary,
-            "data": data,
-            "query": normalized_query,
-            "preset": preset,
-            "date_range": f"{resolved_start} to {resolved_end}",
-            "total": len(limited),
-            "total_found": total_found,
-            "results": data,
-            "message": msg,
+            "summary": {
+                "description": f"新闻搜索结果（{search_mode}模式）",
+                "total_found": total_found,
+                "returned": len(limited),
+                "requested_limit": limit,
+                "search_mode": search_mode,
+                "query": normalized_query,
+                "platforms": platforms or "所有平台",
+                "time_range": time_range_desc,
+                "sort_by": sort_by,
+            },
+            "data": limited,
         }
+
+        if search_mode == "fuzzy":
+            result["summary"]["threshold"] = threshold
+            if total_found < limit:
+                result["note"] = f"模糊搜索模式下，相似度阈值 {threshold} 仅匹配到 {total_found} 条结果"
+
+        if include_rss:
+            rss_matches: List[Dict[str, Any]] = []
+            for rss in rss_items:
+                title = rss.get("title", "")
+                matched, score = self._match_title(
+                    title, normalized_query, search_mode, float(threshold)
+                )
+                if not matched:
+                    continue
+                if preset_group and not matches_word_groups(
+                    title,
+                    [preset_group],
+                    preset_filter_words,
+                    preset_global_filters,
+                ):
+                    continue
+
+                item_date = rss.get("date") or resolved_end
+                published_at = self._normalize_published_at(rss.get("published_at", ""), item_date)
+                rss_item: Dict[str, Any] = {
+                    "title": title,
+                    "feed_name": rss.get("feed_name", rss.get("feed_id", "")),
+                    "feed_id": rss.get("feed_id", ""),
+                    "published_at": published_at,
+                    "date": item_date,
+                    "summary": rss.get("summary", ""),
+                    "similarity_score": round(score, 4),
+                }
+                if include_url:
+                    rss_item["url"] = rss.get("url", "")
+                rss_matches.append(rss_item)
+
+            if sort_by == "date":
+                rss_matches.sort(key=lambda x: self._parse_sort_time(x.get("published_at")), reverse=True)
+            elif sort_by == "relevance":
+                rss_matches.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+
+            rss_results = rss_matches[:rss_limit]
+            result["rss"] = rss_results
+            result["rss_total"] = len(rss_matches)
+            result["summary"]["include_rss"] = True
+            result["summary"]["rss_found"] = len(rss_matches)
+            result["summary"]["rss_returned"] = len(rss_results)
+
+        return result
 
     def _match_title(
         self,
@@ -441,15 +454,13 @@ class BriefingService:
         query: str,
         search_mode: str,
         threshold: float,
-        use_synonyms: bool = True,
-        query_aliases: Optional[List[str]] = None,
     ) -> Tuple[bool, float]:
         if not query:
             return True, 1.0
 
         title_lower = title.lower()
         query_lower = query.lower()
-        terms = self._expand_query_terms(query_lower, use_synonyms=use_synonyms, query_aliases=query_aliases)
+        terms = self._expand_query_terms(query_lower)
 
         if search_mode == "keyword":
             if query_lower in title_lower:
@@ -470,7 +481,7 @@ class BriefingService:
 
         tokens = []
         for term in terms:
-            tokens.extend([token for token in re.split(r"\\s+", term) if token])
+            tokens.extend([token for token in re.split(r"\s+", term) if token])
         if not tokens:
             return False, 0.0
 
@@ -478,55 +489,12 @@ class BriefingService:
         score = hit / len(tokens)
         return score > 0, score
 
-    def _expand_query_terms(self, query_lower: str, use_synonyms: bool = True, query_aliases: Optional[List[str]] = None) -> List[str]:
+    def _expand_query_terms(self, query_lower: str) -> List[str]:
         terms = {query_lower}
-        if use_synonyms:
-            for key, aliases in self._load_search_synonyms().items():
-                if key in query_lower:
-                    terms.update(aliases)
-        if query_aliases:
-            terms.update([str(alias).lower() for alias in query_aliases if str(alias).strip()])
+        # 支持在 query 内直接传多个关键词：空格、逗号、顿号、分号、斜杠、竖线。
+        split_terms = [t.strip().lower() for t in re.split(r"[\s,，、;；/|｜]+", query_lower) if t and t.strip()]
+        terms.update(split_terms)
         return [t.strip().lower() for t in terms if t and t.strip()]
-
-    def _search_synonyms_path(self) -> Path:
-        env_path = os.environ.get("SEARCH_SYNONYMS_FILE")
-        if env_path:
-            return Path(env_path)
-        # 默认使用项目配置文件，可按需热更新
-        return Path("config/search_synonyms.yaml")
-
-    def _load_search_synonyms(self) -> Dict[str, List[str]]:
-        path = self._search_synonyms_path()
-        if not path.exists():
-            return {}
-        try:
-            mtime = path.stat().st_mtime
-            if self._search_synonyms_cache and mtime == self._search_synonyms_mtime:
-                return self._search_synonyms_cache
-
-            with open(path, "r", encoding="utf-8") as f:
-                raw = yaml.safe_load(f) or {}
-
-            synonyms: Dict[str, List[str]] = {}
-            if isinstance(raw, dict):
-                for key, value in raw.items():
-                    if not isinstance(key, str):
-                        continue
-                    if isinstance(value, list):
-                        aliases = [str(item).strip().lower() for item in value if str(item).strip()]
-                    elif isinstance(value, str):
-                        aliases = [value.strip().lower()] if value.strip() else []
-                    else:
-                        aliases = []
-                    if aliases:
-                        synonyms[key.strip().lower()] = aliases
-
-            self._search_synonyms_cache = synonyms
-            self._search_synonyms_mtime = mtime
-            return synonyms
-        except Exception as err:
-            logger.warning(f"Failed to load search synonyms from {path}: {err}")
-            return {}
 
     def _parse_sort_time(self, value: Optional[str]) -> datetime:
         if not value:
@@ -544,16 +512,63 @@ class BriefingService:
             except Exception:
                 return datetime.min
 
+    def _normalize_published_at(self, value: Optional[str], data_date: str) -> str:
+        """将 published_at 统一为 YYYY-MM-DDTHH:MM:SS。"""
+        v = str(value or "").strip()
+        if not v:
+            return f"{data_date}T00:00:00"
+
+        # 已带完整日期前缀（例如 2026-04-22T12:30:00 / 2026-04-22 12:30:00）
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?", v)
+        if m:
+            sec = m.group(4) or "00"
+            return f"{m.group(1)}T{m.group(2)}:{m.group(3)}:{sec}"
+
+        # 仅日期
+        m = re.match(r"^(\d{4}-\d{2}-\d{2})$", v)
+        if m:
+            return f"{m.group(1)}T00:00:00"
+
+        # 热榜常见时间格式：HH-MM / HH:MM
+        m = re.match(r"^(\d{1,2})[-:](\d{2})$", v)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2))
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                return f"{data_date}T{hh:02d}:{mm:02d}:00"
+
+        # 兜底解析（只在字符串中含年份时启用）
+        if re.search(r"\b\d{4}\b", v):
+            try:
+                from dateutil import parser as date_parser
+
+                dt = date_parser.parse(v)
+                return dt.strftime("%Y-%m-%dT%H:%M:%S")
+            except Exception:
+                pass
+
+        return f"{data_date}T00:00:00"
+
     def _available_dates(self, db_type: str) -> List[datetime]:
         base = Path(__file__).resolve().parent.parent / "output" / db_type
         if not base.exists():
             return []
+        table_name = "news_items" if db_type == "news" else "rss_items"
         dates: List[datetime] = []
         for file in base.glob("*.db"):
             try:
-                dates.append(datetime.strptime(file.stem, "%Y-%m-%d"))
+                file_date = datetime.strptime(file.stem, "%Y-%m-%d")
             except ValueError:
                 continue
+            # 跳过“空库”日期，避免默认查询落到无数据的最新日期。
+            try:
+                with sqlite3.connect(str(file)) as conn:
+                    cursor = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+                    if cursor.fetchone() is None:
+                        continue
+            except Exception:
+                continue
+            dates.append(file_date)
         dates.sort()
         return dates
 
@@ -767,6 +782,7 @@ class BriefingService:
                                  "url": item.url,
                                  "feed_name": item.feed_name or feed_id,
                                  "feed_id": feed_id,
+                                 "date": today,
                                  "published_at": item.published_at,
                                  "summary": item.summary
                             })

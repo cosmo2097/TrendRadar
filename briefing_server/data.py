@@ -46,7 +46,7 @@ def get_titles_by_date_range(
                 final_id_to_name.update(news_data.id_to_name)
 
                 for source_id, news_list in news_data.items.items():
-                    if current_platform_ids is not None and source_id not in current_platform_ids:
+                    if current_platform_ids and source_id not in current_platform_ids:
                         continue
 
                     if source_id not in aggregated_results:
@@ -83,6 +83,11 @@ def get_titles_by_date_range(
                                 existing["first_time"] = item_first
                             if item_last > existing["last_time"]:
                                 existing["last_time"] = item_last
+                            # 维护标题命中的日期范围（用于 MCP 风格 date 字段）
+                            if date_str < existing["first_date"]:
+                                existing["first_date"] = date_str
+                            if date_str > existing["last_date"]:
+                                existing["last_date"] = date_str
                                 
                             # 累加 count
                             existing["count"] += item.count
@@ -99,6 +104,8 @@ def get_titles_by_date_range(
                                 "last_time": item.last_time or item.crawl_time,
                                 "count": item.count,
                                 "ranks": ranks,
+                                "first_date": date_str,
+                                "last_date": date_str,
                                 "url": item.url or "",
                                 "mobileUrl": item.mobile_url or "",
                                 "rank_timeline": item.rank_timeline or [],
@@ -170,6 +177,7 @@ def get_rss_by_date_range(
                                 "url": item.url,
                                 "feed_name": item.feed_name or feed_id,
                                 "feed_id": feed_id,
+                                "date": date_str,
                                 "published_at": item.published_at,
                                 "summary": item.summary
                             })

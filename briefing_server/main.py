@@ -5,7 +5,7 @@ TrendRadar API 入口
 """
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional, Union
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -57,20 +57,19 @@ class BriefingRequest(BaseModel):
 class SearchRequest(BaseModel):
     """新闻搜索请求"""
 
-    query: Optional[str] = Field(None, description="搜索关键词")
-    start_date: Optional[str] = Field(None, description="开始日期 (YYYY-MM-DD), 为空时自动使用最新可用日期")
-    end_date: Optional[str] = Field(None, description="结束日期 (YYYY-MM-DD), 为空时自动使用最新可用日期")
+    query: Optional[str] = Field(None, description="搜索关键词（可选；无 preset 时必填）")
+    date_range: Optional[Union[Dict[str, str], str]] = Field(
+        None, description="日期范围：{\"start\":\"YYYY-MM-DD\",\"end\":\"YYYY-MM-DD\"} / YYYY-MM-DD / 自然语言（今天、本周、最近7天）"
+    )
     platforms: Optional[List[str]] = Field(None, description="指定平台 ID 列表")
-    preset: Optional[str] = Field(None, description="预设组名称")
-    format: Optional[str] = Field("timeline", description="返回格式: group (按源分组) 或 timeline (按时间排序)")
-    source_type: Optional[str] = Field("all", description="数据源类型: all | hotlist | rss")
+    preset: Optional[str] = Field(None, description="预设组名称（填写即启用）")
     search_mode: Optional[str] = Field("keyword", description="搜索模式: keyword | fuzzy | entity")
     sort_by: Optional[str] = Field("relevance", description="排序方式: relevance | weight | date")
     limit: Optional[int] = Field(50, description="最大返回条数")
     threshold: Optional[float] = Field(0.6, description="fuzzy 模式相似度阈值 (0~1)")
-    include_url: Optional[bool] = Field(True, description="是否返回链接字段")
-    use_synonyms: Optional[bool] = Field(True, description="是否启用同义词扩展")
-    query_aliases: Optional[List[str]] = Field(None, description="请求级同义词扩展，如 ['AI','AIGC']")
+    include_url: Optional[bool] = Field(False, description="是否返回链接字段")
+    include_rss: Optional[bool] = Field(False, description="是否同时搜索 RSS")
+    rss_limit: Optional[int] = Field(20, description="RSS 返回条数限制")
 
 
 class AnalysisRequest(BaseModel):
@@ -144,19 +143,16 @@ async def search_news(request: SearchRequest):
     try:
         return await service.search_news(
             query=request.query,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            platform_ids=request.platforms,
+            date_range=request.date_range,
+            platforms=request.platforms,
             preset=request.preset,
-            result_format=request.format,
-            source_type=request.source_type or "all",
             search_mode=request.search_mode or "keyword",
             sort_by=request.sort_by or "relevance",
             limit=request.limit if request.limit is not None else 50,
             threshold=request.threshold if request.threshold is not None else 0.6,
-            include_url=True if request.include_url is None else bool(request.include_url),
-            use_synonyms=True if request.use_synonyms is None else bool(request.use_synonyms),
-            query_aliases=request.query_aliases,
+            include_url=False if request.include_url is None else bool(request.include_url),
+            include_rss=False if request.include_rss is None else bool(request.include_rss),
+            rss_limit=request.rss_limit if request.rss_limit is not None else 20,
         )
     except Exception as e:
         logger.error(f"Search API Error: {e}")
