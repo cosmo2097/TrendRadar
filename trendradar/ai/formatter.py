@@ -36,13 +36,14 @@ def _format_list_content(text: str) -> str:
     result = re.sub(r'(\d+)\.([^ \d])', r'\1. \2', text)
 
     # 2. 强制换行：匹配 "数字."，且前面不是换行符
-    result = re.sub(r'(?<=[^\n])\s+(\d+\.)', r'\n\1', result)
+    #    (?!\d) 排除版本号/小数（如 2.0、3.5），避免将其误判为列表序号
+    result = re.sub(r'(?<=[^\n])\s+(\d+\.)(?!\d)', r'\n\1', result)
     
     # 3. 处理 "1.**粗体**" 这种情况（虽然 Prompt 要求不输出 Markdown，但防御性处理）
     result = re.sub(r'(?<=[^\n])(\d+\.\*\*)', r'\n\1', result)
 
-    # 4. 处理中文标点后的换行
-    result = re.sub(r'([：:;,。；，])\s*(\d+\.)', r'\1\n\2', result)
+    # 4. 处理中文标点后的换行（排除版本号/小数）
+    result = re.sub(r'([：:;,。；，])\s*(\d+\.)(?!\d)', r'\1\n\2', result)
 
     # 5. 处理 "XX方面："、"XX领域：" 等子标题换行
     # 只有在中文标点（句号、逗号、分号等）后才触发换行，避免破坏 "1. XX领域：" 格式
@@ -57,9 +58,9 @@ def _format_list_content(text: str) -> str:
     # 用 (?=[^\s:：]) 避免正则回溯将冒号误判为"内容"而拆开 【tag】：
     result = re.sub(r'(【[^】]+】[:：]?)[ \t]*(?=[^\s:：])', r'\1\n', result)
 
-    # 7. 在列表项之间增加视觉空行
+    # 7. 在列表项之间增加视觉空行（排除版本号/小数）
     # 排除 【标签】 行（以】结尾）和子标题行（以冒号结尾）之后的情况，避免标题与首项之间出现空行
-    result = re.sub(r'(?<![:：】])\n(\d+\.)', r'\n\n\1', result)
+    result = re.sub(r'(?<![:：】])\n(\d+\.)(?!\d)', r'\n\n\1', result)
 
     return result
 
@@ -78,6 +79,8 @@ def _format_standalone_summaries(summaries: dict) -> str:
 def render_ai_analysis_markdown(result: AIAnalysisResult) -> str:
     """渲染为通用 Markdown 格式（Telegram、企业微信、ntfy、Bark、Slack）"""
     if not result.success:
+        if result.skipped:
+            return f"ℹ️ {result.error}"
         return f"⚠️ AI 分析失败: {result.error}"
 
     lines = ["**✨ AI 热点分析**", ""]
@@ -114,6 +117,8 @@ def render_ai_analysis_markdown(result: AIAnalysisResult) -> str:
 def render_ai_analysis_feishu(result: AIAnalysisResult) -> str:
     """渲染为飞书卡片 Markdown 格式"""
     if not result.success:
+        if result.skipped:
+            return f"ℹ️ {result.error}"
         return f"⚠️ AI 分析失败: {result.error}"
 
     lines = ["**✨ AI 热点分析**", ""]
@@ -150,6 +155,8 @@ def render_ai_analysis_feishu(result: AIAnalysisResult) -> str:
 def render_ai_analysis_dingtalk(result: AIAnalysisResult) -> str:
     """渲染为钉钉 Markdown 格式"""
     if not result.success:
+        if result.skipped:
+            return f"ℹ️ {result.error}"
         return f"⚠️ AI 分析失败: {result.error}"
 
     lines = ["### ✨ AI 热点分析", ""]
@@ -192,6 +199,8 @@ def render_ai_analysis_dingtalk(result: AIAnalysisResult) -> str:
 def render_ai_analysis_html(result: AIAnalysisResult) -> str:
     """渲染为 HTML 格式（邮件）"""
     if not result.success:
+        if result.skipped:
+            return f'<div class="ai-info">ℹ️ {_escape_html(result.error)}</div>'
         return (
             f'<div class="ai-error">⚠️ AI 分析失败: {_escape_html(result.error)}</div>'
         )
@@ -278,6 +287,8 @@ def render_ai_analysis_html(result: AIAnalysisResult) -> str:
 def render_ai_analysis_plain(result: AIAnalysisResult) -> str:
     """渲染为纯文本格式"""
     if not result.success:
+        if result.skipped:
+            return result.error
         return f"AI 分析失败: {result.error}"
 
     lines = ["【✨ AI 热点分析】", ""]
@@ -307,13 +318,50 @@ def render_ai_analysis_plain(result: AIAnalysisResult) -> str:
     return "\n".join(lines)
 
 
+def render_ai_analysis_telegram(result: AIAnalysisResult) -> str:
+    """渲染为 Telegram HTML 格式（配合 parse_mode: HTML）
+
+    Telegram Bot API 的 HTML 模式仅支持有限标签：
+    <b>, <i>, <u>, <s>, <code>, <pre>, <a href="">, <blockquote>
+    换行直接使用 \\n，不支持 <br>, <div>, <h1>-<h6> 等标签。
+    """
+    if not result.success:
+        if result.skipped:
+            return f"ℹ️ {_escape_html(result.error)}"
+        return f"⚠️ AI 分析失败: {_escape_html(result.error)}"
+
+    lines = ["<b>✨ AI 热点分析</b>", ""]
+
+    if result.core_trends:
+        lines.extend(["<b>核心热点态势</b>", _escape_html(_format_list_content(result.core_trends)), ""])
+
+    if result.sentiment_controversy:
+        lines.extend(["<b>舆论风向争议</b>", _escape_html(_format_list_content(result.sentiment_controversy)), ""])
+
+    if result.signals:
+        lines.extend(["<b>异动与弱信号</b>", _escape_html(_format_list_content(result.signals)), ""])
+
+    if result.rss_insights:
+        lines.extend(["<b>RSS 深度洞察</b>", _escape_html(_format_list_content(result.rss_insights)), ""])
+
+    if result.outlook_strategy:
+        lines.extend(["<b>研判策略建议</b>", _escape_html(_format_list_content(result.outlook_strategy)), ""])
+
+    if result.standalone_summaries:
+        summaries_text = _format_standalone_summaries(result.standalone_summaries)
+        if summaries_text:
+            lines.extend(["<b>独立源点速览</b>", _escape_html(summaries_text)])
+
+    return "\n".join(lines)
+
+
 def get_ai_analysis_renderer(channel: str):
     """根据渠道获取对应的渲染函数"""
     renderers = {
         "feishu": render_ai_analysis_feishu,
         "dingtalk": render_ai_analysis_dingtalk,
         "wework": render_ai_analysis_markdown,
-        "telegram": render_ai_analysis_markdown,
+        "telegram": render_ai_analysis_telegram,
         "email": render_ai_analysis_html_rich,  # 邮件使用丰富样式，配合 HTML 报告的 CSS
         "ntfy": render_ai_analysis_markdown,
         "bark": render_ai_analysis_plain,
@@ -329,6 +377,11 @@ def render_ai_analysis_html_rich(result: AIAnalysisResult) -> str:
 
     # 检查是否成功
     if not result.success:
+        if result.skipped:
+            return f"""
+                <div class="ai-section">
+                    <div class="ai-info">ℹ️ {_escape_html(str(result.error))}</div>
+                </div>"""
         error_msg = result.error or "未知错误"
         return f"""
                 <div class="ai-section">
@@ -340,7 +393,8 @@ def render_ai_analysis_html_rich(result: AIAnalysisResult) -> str:
                     <div class="ai-section-header">
                         <div class="ai-section-title">✨ AI 热点分析</div>
                         <span class="ai-section-badge">AI</span>
-                    </div>"""
+                    </div>
+                    <div class="ai-blocks-grid">"""
 
     if result.core_trends:
         content = _format_list_content(result.core_trends)
@@ -398,5 +452,6 @@ def render_ai_analysis_html_rich(result: AIAnalysisResult) -> str:
                     </div>"""
 
     ai_html += """
+                    </div>
                 </div>"""
     return ai_html
