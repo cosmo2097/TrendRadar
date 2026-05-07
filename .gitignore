@@ -26,6 +26,7 @@ venv/
 env/
 ENV/
 .env
+node_modules/
 
 # MacOS
 .DS_Store

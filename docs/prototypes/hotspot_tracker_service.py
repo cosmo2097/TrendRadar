@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse
 ROOT = Path(__file__).resolve().parents[2]
 HTML_PATH = Path(__file__).resolve().with_name("hotspot-tracker-demo.html")
 OPS_HTML_PATH = Path(__file__).resolve().with_name("hotspot-ops-board.html")
-MCP_URL = "http://127.0.0.1:3333/mcp"
+WATCH_HTML_PATH = Path(__file__).resolve().with_name("hotspot-watch-prototype.html")
+DEFAULT_MCP_URL = "http://127.0.0.1:3333/mcp"
+MCP_URL = os.getenv("TRENDPULSE_MCP_URL") or os.getenv("MCP_URL") or DEFAULT_MCP_URL
 
 app = FastAPI(title="TrendPulse Prototype Service")
 
@@ -194,6 +196,186 @@ def _build_aggregate_rows(aggregate: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _parse_platforms(raw: str | None) -> list[str] | None:
+    if not raw:
+        return None
+    parts = [item.strip() for item in raw.split(",")]
+    cleaned = [item for item in parts if item]
+    return cleaned or None
+
+
+def _build_date_range(start: str | None, end: str | None) -> dict[str, str] | None:
+    if start and end:
+        return {"start": start, "end": end}
+    if start:
+        return {"start": start, "end": start}
+    if end:
+        return {"start": end, "end": end}
+    return None
+
+
+def _extract_link(item: dict[str, Any]) -> str:
+    return str(item.get("url") or item.get("mobileUrl") or "")
+
+
+def _build_library_rows(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        rows.append(
+            {
+                "title": item.get("title", "未命名热点"),
+                "platform": item.get("platform", ""),
+                "platform_name": item.get("platform_name", item.get("platform", "未知信源")),
+                "date": item.get("date", ""),
+                "timestamp": item.get("timestamp", ""),
+                "rank": int(item.get("rank", 0) or 0),
+                "count": int(item.get("count", 0) or 0),
+                "ranks": [int(rank) for rank in item.get("ranks", []) if int(rank or 0) > 0],
+                "url": _extract_link(item),
+            }
+        )
+    return rows
+
+
+def _annotate_library_trends(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+
+    for row in rows:
+        ranks = row.get("ranks", [])
+        sample_count = int(row.get("count", 0) or 0)
+        if not ranks:
+            rank = int(row.get("rank", 0) or 0)
+            ranks = [rank] if rank > 0 else []
+        row["rank_history"] = [
+            {"step": index + 1, "rank": rank}
+            for index, rank in enumerate(ranks)
+        ]
+
+        if len(ranks) <= 1:
+            if sample_count <= 1:
+                row["trend_direction"] = "new"
+                row["trend_label"] = "新上榜"
+                row["trend_delta"] = None
+            else:
+                row["trend_direction"] = "flat"
+                row["trend_label"] = "样本不足"
+                row["trend_delta"] = None
+        else:
+            first_rank = int(ranks[0] or 0)
+            last_rank = int(ranks[-1] or 0)
+            if first_rank <= 0 or last_rank <= 0:
+                row["trend_direction"] = "flat"
+                row["trend_label"] = "持平"
+                row["trend_delta"] = None
+            else:
+                delta = first_rank - last_rank
+                row["trend_delta"] = delta
+                if delta > 0:
+                    row["trend_direction"] = "up"
+                    row["trend_label"] = "上升"
+                elif delta < 0:
+                    row["trend_direction"] = "down"
+                    row["trend_label"] = "下降"
+                else:
+                    row["trend_direction"] = "flat"
+                    row["trend_label"] = "持平"
+
+        row["is_new"] = row.get("trend_direction") == "new"
+        row["history_points"] = len(ranks)
+
+    return rows
+
+
+def _aggregate_primary_url(item: dict[str, Any]) -> str:
+    urls = item.get("urls", [])
+    if isinstance(urls, list) and urls:
+        first = urls[0] or {}
+        return str(first.get("url") or first.get("mobileUrl") or "")
+    return ""
+
+
+def _filter_aggregate_rows(rows: list[dict[str, Any]], keyword: str) -> list[dict[str, Any]]:
+    if not keyword:
+        return rows
+    lowered = keyword.lower()
+    return [
+        item
+        for item in rows
+        if lowered in str(item.get("representative_title", "")).lower()
+    ]
+
+
+def _build_focus_cards_from_aggregate(
+    rows: list[dict[str, Any]],
+    mode: str,
+    top_n: int,
+    summary: dict[str, Any],
+    keyword: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    filtered_rows = _filter_aggregate_rows(rows, keyword)
+    cross_platform_rows = [
+        item
+        for item in (filtered_rows or rows)
+        if int(item.get("platform_count", len(item.get("platforms", []))) or 0) > 1
+    ]
+    source_rows = cross_platform_rows
+
+    sortable_rows = sorted(
+        source_rows,
+        key=lambda item: (
+            -float(item.get("aggregate_weight", 0) or 0),
+            -int(item.get("platform_count", 0) or 0),
+            int(item.get("best_rank", 999) or 999),
+            -int(item.get("total_count", 0) or 0),
+            str(item.get("representative_title", "")),
+        ),
+    )
+
+    cards: list[dict[str, Any]] = []
+    for item in sortable_rows[:top_n]:
+        rank = int(item.get("best_rank", 0) or 0)
+        platform_count = int(item.get("platform_count", len(item.get("platforms", []))) or 0)
+        platforms = item.get("platforms", [])
+        headline = item.get("representative_title", "未命名热点事件")
+        cards.append(
+            {
+                "keyword": keyword or ("跨平台传播" if platform_count > 1 else "单平台热点"),
+                "topic_count": int(item.get("total_count", 0) or 0),
+                "rank": rank,
+                "headline": headline,
+                "platform_name": " / ".join(platforms[:3]) if platforms else "热点库",
+                "url": _aggregate_primary_url(item),
+                "reason": (
+                    f"{'当前视角' if mode == 'current' else '今日累计'}下，这个事件的聚合权重为 "
+                    f"{float(item.get('aggregate_weight', 0) or 0):.1f}，覆盖 {platform_count} 个平台，"
+                    f"传播强度 {int(item.get('total_count', 0) or 0)}"
+                    f"{f'，最佳排名 #{rank}' if rank else ''}。"
+                ),
+                "platform_count": platform_count,
+                "dates": item.get("dates", []),
+                "aggregate_weight": round(float(item.get("aggregate_weight", 0) or 0), 2),
+            }
+        )
+
+    total_rows = 0
+    for key in ("aggregated_count", "total", "returned"):
+        if summary.get(key) is not None:
+            total_rows = int(summary.get(key, 0) or 0)
+            if total_rows:
+                break
+
+    snapshot = {
+        "mode": mode,
+        "latest_total": int(summary.get("original_count", total_rows) or total_rows),
+        "latest_returned": len(source_rows),
+        "trending_keywords": len(cards),
+        "aggregated_events": total_rows or len(source_rows),
+        "cross_platform_events": len(source_rows),
+    }
+    return snapshot, cards
+
+
 def _build_ops_alerts(
     keyword: str,
     trend_rows: list[dict[str, Any]],
@@ -261,6 +443,11 @@ async def serve_demo() -> FileResponse:
 @app.get("/ops-board")
 async def serve_ops_board() -> FileResponse:
     return FileResponse(OPS_HTML_PATH)
+
+
+@app.get("/hotspot-watch")
+async def serve_hotspot_watch() -> FileResponse:
+    return FileResponse(WATCH_HTML_PATH)
 
 
 @app.get("/api/hotspot-tracker")
@@ -382,4 +569,86 @@ async def ops_board(
         "platformData": platform_rows,
         "propagationData": aggregate_rows,
         "alerts": alerts,
+    }
+
+
+@app.get("/api/hotspot-watch")
+async def hotspot_watch(
+    keyword: str = Query("", description="关键词，可选"),
+    platforms: str = Query("", description="逗号分隔的平台 ID"),
+    start_date: str = Query("", description="开始日期 YYYY-MM-DD"),
+    end_date: str = Query("", description="结束日期 YYYY-MM-DD"),
+    focus_mode: str = Query("current", pattern="^(current|daily)$"),
+    limit: int = Query(40, ge=1, le=100),
+) -> dict[str, Any]:
+    platform_list = _parse_platforms(platforms)
+    explicit_range = _build_date_range(start_date or None, end_date or None)
+    cleaned_keyword = keyword.strip()
+    focus_range = explicit_range or {
+        "start": date.today().isoformat(),
+        "end": date.today().isoformat(),
+    }
+
+    if cleaned_keyword:
+        library_payload = await _run_tool(
+            "search_news",
+            query=cleaned_keyword,
+            date_range=explicit_range,
+            platforms=platform_list,
+            limit=limit,
+            sort_by="weight",
+            include_url=True,
+        )
+        library_summary = library_payload.get("summary", {})
+        library_rows = _annotate_library_trends(_build_library_rows(library_payload.get("data", [])))
+        query_mode = "keyword_search"
+    else:
+        library_payload = await _run_tool(
+            "get_news_by_date",
+            date_range=focus_range,
+            platforms=platform_list,
+            limit=limit,
+            include_url=True,
+        )
+        library_summary = library_payload.get("summary", {})
+        library_rows = _annotate_library_trends(_build_library_rows(library_payload.get("data", [])))
+        query_mode = "date_browse"
+
+    aggregate_payload = await _run_tool(
+        "aggregate_news",
+        date_range=focus_range,
+        platforms=platform_list,
+        limit=max(limit, 20),
+        include_url=True,
+    )
+
+    focus_snapshot, focus_cards = _build_focus_cards_from_aggregate(
+        rows=aggregate_payload.get("data", []),
+        mode=focus_mode,
+        top_n=max(len(aggregate_payload.get("data", [])), 1),
+        summary=aggregate_payload.get("summary", {}),
+        keyword=cleaned_keyword,
+    )
+
+    return {
+        "success": True,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mcp_url": MCP_URL,
+        "filters": {
+            "keyword": cleaned_keyword,
+            "platforms": platform_list or [],
+            "start_date": start_date,
+            "end_date": end_date,
+            "focus_mode": focus_mode,
+            "limit": limit,
+        },
+        "focus": {
+            "snapshot": focus_snapshot,
+            "cards": focus_cards,
+        },
+        "library": {
+            "query_mode": query_mode,
+            "summary": library_summary,
+            "rows": library_rows,
+        },
     }
