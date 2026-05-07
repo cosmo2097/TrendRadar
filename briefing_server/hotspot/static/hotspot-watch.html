@@ -1,0 +1,1441 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrendPulse - 热点跟踪原型</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #f6f2e8;
+      --paper: rgba(255, 251, 244, 0.88);
+      --ink: #1f1c17;
+      --muted: #6d6456;
+      --line: #dbcdb8;
+      --accent: #b44d1f;
+      --accent-deep: #8f3410;
+      --teal: #145b64;
+      --gold: #c28c2f;
+      --soft: #f0e5d5;
+      --shadow: 0 24px 60px rgba(37, 27, 19, 0.1);
+      --radius: 22px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background:
+        radial-gradient(circle at 8% 14%, rgba(180, 77, 31, 0.14), transparent 28%),
+        radial-gradient(circle at 90% 10%, rgba(20, 91, 100, 0.15), transparent 28%),
+        linear-gradient(180deg, #faf6ef 0%, #efe7d9 100%);
+    }
+
+    body.embed-mode {
+      background: transparent;
+    }
+
+    .shell {
+      width: min(1360px, 95vw);
+      margin: 24px auto 40px;
+      display: grid;
+      gap: 16px;
+    }
+
+    body.embed-mode .shell {
+      width: min(1360px, 96vw);
+      margin: 16px auto 14px;
+      gap: 12px;
+    }
+
+    .card {
+      background: var(--paper);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .hero {
+      padding: 28px;
+      background:
+        linear-gradient(135deg, rgba(180, 77, 31, 0.08), transparent 42%),
+        linear-gradient(220deg, rgba(20, 91, 100, 0.1), transparent 48%);
+      position: relative;
+    }
+
+    body.embed-mode .hero {
+      padding: 14px 16px 12px;
+      background: transparent;
+    }
+
+    body.embed-mode .hero .eyebrow,
+    body.embed-mode .hero h1,
+    body.embed-mode .hero > p,
+    body.embed-mode .hero .hint {
+      display: none;
+    }
+
+    body.embed-mode .hero .toolbar {
+      margin-top: 0;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 8px;
+      align-items: end;
+    }
+
+    body.embed-mode .hero .metrics {
+      margin-top: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    body.embed-mode .hero .metric {
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+
+    body.embed-mode .hero .metric b {
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+
+    .top-tabs {
+      display: inline-flex;
+      gap: 6px;
+      padding: 4px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: 0 6px 14px rgba(37, 27, 19, 0.1);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .top-tab {
+      border: 0;
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.1;
+      cursor: pointer;
+    }
+
+    .top-tab.active {
+      background: linear-gradient(135deg, var(--teal), #0f4a52);
+      color: #fff;
+    }
+
+    .eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--teal);
+    }
+
+    h1 {
+      margin: 10px 0 8px;
+      font-family: "Fraunces", serif;
+      font-size: clamp(38px, 5vw, 62px);
+      line-height: 0.98;
+      font-weight: 600;
+      max-width: 12ch;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 74ch;
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 15px;
+    }
+
+    .toolbar {
+      margin-top: 22px;
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .search-toolbar {
+      grid-template-columns: minmax(260px, 1fr) minmax(320px, 1fr) auto;
+      align-items: center;
+    }
+
+    .date-range {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 8px;
+      align-items: end;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .date-sep {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      padding-bottom: 10px;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 13px;
+      background: rgba(255, 255, 255, 0.78);
+      color: var(--ink);
+      font: inherit;
+    }
+
+
+    .actions {
+      display: flex;
+      align-items: end;
+      gap: 10px;
+    }
+
+    .btn {
+      border: 0;
+      border-radius: 14px;
+      padding: 13px 18px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+      color: #fff;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 14px 28px rgba(180, 77, 31, 0.2);
+    }
+
+    .btn-secondary {
+      background: linear-gradient(135deg, #145b64, #0f4a52);
+      box-shadow: 0 14px 28px rgba(20, 91, 100, 0.22);
+    }
+
+    .btn[disabled] {
+      opacity: 0.68;
+      cursor: wait;
+    }
+
+    .hint {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .hint.error {
+      color: var(--accent-deep);
+      font-weight: 700;
+    }
+
+    .top-loading {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 3px;
+      z-index: 100;
+      background: linear-gradient(90deg, transparent 0%, rgba(20, 91, 100, 0.22) 30%, rgba(20, 91, 100, 0.95) 60%, transparent 100%);
+      background-size: 200% 100%;
+      animation: loading-slide 1s linear infinite;
+      display: none;
+    }
+
+    .top-loading.active {
+      display: block;
+    }
+
+    @keyframes loading-slide {
+      from { background-position: 200% 0; }
+      to { background-position: -200% 0; }
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .metric {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.74);
+    }
+
+    .metric b {
+      display: block;
+      font-size: 24px;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .section {
+      padding: 22px;
+    }
+
+    body.embed-mode .section {
+      padding: 16px;
+    }
+
+    .section h2 {
+      margin: 0 0 8px;
+      font-family: "Fraunces", serif;
+      font-size: 32px;
+      line-height: 1.05;
+    }
+
+    body.embed-mode .section h2 {
+      font-size: 26px;
+      margin-bottom: 6px;
+    }
+
+    .section p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .focus-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    .focus-more-wrap {
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+    }
+
+    .focus-more-btn {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 7px 14px;
+      background: rgba(255, 255, 255, 0.88);
+      color: var(--teal);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.7fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    body.embed-mode .dashboard {
+      gap: 12px;
+    }
+
+    .right-stack {
+      display: grid;
+      gap: 16px;
+      align-items: start;
+    }
+
+    .focus-card {
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(244, 236, 222, 0.92));
+      display: grid;
+      gap: 10px;
+    }
+
+    .focus-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: rgba(20, 91, 100, 0.1);
+      color: var(--teal);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .focus-card strong {
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .focus-meta,
+    .focus-card a,
+    .focus-card span {
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .focus-meta,
+    .focus-card span {
+      color: var(--muted);
+    }
+
+    .focus-card a {
+      color: var(--accent-deep);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .platform-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .platform-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(20, 91, 100, 0.18);
+      background: rgba(20, 91, 100, 0.08);
+      color: var(--teal);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .platform-link.muted {
+      color: var(--muted);
+      border-color: rgba(109, 100, 86, 0.2);
+      background: rgba(109, 100, 86, 0.08);
+      pointer-events: none;
+    }
+
+    .table-shell {
+      overflow: auto;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.8);
+    }
+
+    .loading-cell {
+      padding: 22px 16px !important;
+    }
+
+    .loading-dots::after {
+      content: " .";
+      animation: dots 1s steps(3, end) infinite;
+    }
+
+    @keyframes dots {
+      0% { content: " ."; }
+      33% { content: " .."; }
+      66% { content: " ..."; }
+      100% { content: " ."; }
+    }
+
+    .pager {
+      margin-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .pager-actions {
+      display: inline-flex;
+      gap: 8px;
+    }
+
+    .pager-btn {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 6px 10px;
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--ink);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .pager-btn[disabled] {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1100px;
+    }
+
+    thead th {
+      background: rgba(239, 229, 213, 0.9);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      text-align: left;
+      padding: 14px 16px;
+    }
+
+    tbody td {
+      padding: 9px 12px;
+      border-top: 1px solid rgba(219, 205, 184, 0.8);
+      vertical-align: top;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    tbody tr:hover {
+      background: rgba(255, 248, 238, 0.82);
+    }
+
+    .title-cell strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 15px;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .link {
+      color: var(--accent-deep);
+      font-weight: 700;
+      text-decoration: none;
+      word-break: break-all;
+    }
+
+    .trend-cell {
+      min-width: 150px;
+    }
+
+    .trend-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .trend-badge.new {
+      background: rgba(194, 140, 47, 0.16);
+      color: #8f6111;
+    }
+
+    .trend-badge.up {
+      background: rgba(20, 91, 100, 0.14);
+      color: var(--teal);
+    }
+
+    .trend-badge.down {
+      background: rgba(180, 77, 31, 0.14);
+      color: var(--accent-deep);
+    }
+
+    .trend-badge.flat {
+      background: rgba(109, 100, 86, 0.12);
+      color: var(--muted);
+    }
+
+    .sparkline {
+      width: 130px;
+      height: 28px;
+      display: block;
+    }
+
+    .sidebar-list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .mini-alert-list { display: grid; gap: 8px; }
+
+    .mini-alert {
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.84);
+      display: grid;
+      gap: 6px;
+    }
+
+    .mini-alert b {
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .mini-alert-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .mini-alert-level {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+
+    .mini-alert.warning .mini-alert-level {
+      color: #8f6111;
+      background: rgba(194, 140, 47, 0.2);
+    }
+
+    .mini-alert.critical .mini-alert-level {
+      color: #8f3410;
+      background: rgba(180, 77, 31, 0.2);
+    }
+
+    .mini-alert.info .mini-alert-level {
+      color: var(--teal);
+      background: rgba(20, 91, 100, 0.18);
+    }
+
+    .mini-alert-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mini-alert-metrics strong {
+      color: var(--ink);
+      font-size: 12px;
+    }
+
+    .mini-alert-sample {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .mini-alert span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .mini-alert.warning {
+      border-color: rgba(194, 140, 47, 0.4);
+      background: rgba(194, 140, 47, 0.12);
+    }
+
+    .mini-alert.critical {
+      border-color: rgba(180, 77, 31, 0.45);
+      background: rgba(180, 77, 31, 0.12);
+    }
+
+    .mini-alert.info {
+      border-color: rgba(20, 91, 100, 0.4);
+      background: rgba(20, 91, 100, 0.1);
+    }
+
+    .sidebar-item {
+      padding: 14px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.82);
+      display: grid;
+      gap: 6px;
+    }
+
+    .sidebar-item strong {
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .sidebar-meta {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .sidebar-link {
+      color: var(--accent-deep);
+      font-size: 12px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .modal {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(31, 28, 23, 0.35);
+      backdrop-filter: blur(8px);
+      z-index: 50;
+    }
+
+    .modal.open {
+      display: flex;
+    }
+
+    .modal-panel {
+      width: min(1320px, 96vw);
+      max-height: min(88vh, 920px);
+      overflow: auto;
+      background: rgba(255, 251, 244, 0.98);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: 0 30px 80px rgba(31, 28, 23, 0.22);
+      padding: 22px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .modal-close {
+      border: 0;
+      border-radius: 999px;
+      width: 38px;
+      height: 38px;
+      background: rgba(180, 77, 31, 0.12);
+      color: var(--accent-deep);
+      font: inherit;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    @media (max-width: 1120px) {
+      .toolbar,
+      .focus-grid,
+      .metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .search-toolbar {
+        grid-template-columns: 1fr;
+      }
+
+      .date-range {
+        grid-template-columns: 1fr;
+      }
+
+      .date-sep {
+        display: none;
+      }
+
+      .dashboard {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(96vw, 96vw);
+      }
+
+      .hero,
+      .section {
+        padding: 18px;
+      }
+
+      .toolbar,
+      .focus-grid,
+      .metrics {
+        grid-template-columns: 1fr;
+      }
+
+      .actions {
+        align-items: stretch;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="top-loading" class="top-loading" aria-hidden="true"></div>
+  <main class="shell">
+    <section class="card hero">
+      <h1>热点跟踪</h1>
+      <p>先看重点，必要时再检索明细。</p>
+
+      <div class="toolbar">
+        <div class="field">
+          <label for="focus-window">时间窗口</label>
+          <select id="focus-window">
+            <option value="today" selected>今日</option>
+            <option value="yesterday">昨天</option>
+            <option value="last_3_days">近3天</option>
+            <option value="last_7_days">近一周</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button class="btn" id="apply" type="button">刷新看板</button>
+          <button class="btn btn-secondary" id="open-search" type="button">检索热点库</button>
+        </div>
+      </div>
+
+      <div class="hint" id="hint">默认展示重点关注与热点榜单快览；需要深挖时，进入“热点检索”弹框。</div>
+
+      <div class="metrics">
+        <div class="metric">
+          <b id="metric-latest">0</b>
+          <span>今日热点总量</span>
+        </div>
+        <div class="metric">
+          <b id="metric-topics">0</b>
+          <span>重点关注条目</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="dashboard">
+      <article class="card section">
+        <h2>重点关注</h2>
+        <p>跨平台高热事件优先展示。</p>
+        <div class="focus-grid" id="focus-grid"></div>
+        <div class="focus-more-wrap">
+          <button class="focus-more-btn" id="focus-more" type="button" hidden>查看更多</button>
+        </div>
+      </article>
+
+      <div class="right-stack">
+        <aside class="card section">
+          <h2>热点预警</h2>
+          <p>实时异常升温提示。</p>
+          <div class="mini-alert-list" id="mini-alert-list"></div>
+        </aside>
+
+        <aside class="card section">
+          <div class="section-head">
+            <h2>热点榜单</h2>
+            <div class="top-tabs" id="today-sort-tabs">
+              <button class="top-tab active" data-mode="weight" type="button">权重</button>
+              <button class="top-tab" data-mode="platform" type="button">平台</button>
+              <button class="top-tab" data-mode="new" type="button">新上</button>
+            </div>
+          </div>
+          <p>单平台热点快览。</p>
+          <div class="sidebar-list" id="sidebar-list"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <div class="modal" id="search-modal" aria-hidden="true">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div>
+          <h2>热点检索</h2>
+          <p>二层检索台：按关键词和时间范围拉取热点，并保留趋势与原始链接，适合深入追踪单个主题。</p>
+        </div>
+        <button class="modal-close" id="close-search" type="button" aria-label="关闭">×</button>
+      </div>
+
+      <div class="toolbar search-toolbar">
+        <div class="field">
+          <label for="keyword">关键词</label>
+          <input id="keyword" type="text" placeholder="如 AI、OpenAI、油价、关税" />
+        </div>
+        <div class="date-range">
+          <div class="field">
+            <label for="start-date">开始日期</label>
+            <input id="start-date" type="date" />
+          </div>
+          <span class="date-sep">至</span>
+          <div class="field">
+            <label for="end-date">结束日期</label>
+            <input id="end-date" type="date" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn" id="search-apply" type="button">执行检索</button>
+        </div>
+      </div>
+
+      <div class="table-shell">
+        <table>
+          <thead>
+            <tr>
+              <th>热点标题</th>
+              <th>信源</th>
+              <th>上榜日期</th>
+              <th>排名</th>
+              <th>趋势</th>
+              <th>趋势说明</th>
+            </tr>
+          </thead>
+          <tbody id="library-body"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="library-pager" hidden>
+        <span id="library-page-info">第 1 / 1 页</span>
+        <div class="pager-actions">
+          <button class="pager-btn" id="library-prev" type="button">上一页</button>
+          <button class="pager-btn" id="library-next" type="button">下一页</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // boot
+    const pageParams = new URLSearchParams(window.location.search);
+    const isEmbedMode = ["1", "true", "yes"].includes((pageParams.get("iframe") || "").toLowerCase());
+    if (isEmbedMode) {
+      document.body.classList.add("embed-mode");
+    }
+
+    // dom refs
+    const keywordInput = document.getElementById("keyword");
+    const startDateInput = document.getElementById("start-date");
+    const endDateInput = document.getElementById("end-date");
+    const focusWindowInput = document.getElementById("focus-window");
+    const todaySortTabs = document.getElementById("today-sort-tabs");
+    const applyBtn = document.getElementById("apply");
+    const searchApplyBtn = document.getElementById("search-apply");
+    const openSearchBtn = document.getElementById("open-search");
+    const closeSearchBtn = document.getElementById("close-search");
+    const searchModal = document.getElementById("search-modal");
+    const hint = document.getElementById("hint");
+    const focusGrid = document.getElementById("focus-grid");
+    const focusMoreBtn = document.getElementById("focus-more");
+    const miniAlertList = document.getElementById("mini-alert-list");
+    const sidebarList = document.getElementById("sidebar-list");
+    const libraryBody = document.getElementById("library-body");
+    const topLoading = document.getElementById("top-loading");
+    const libraryPager = document.getElementById("library-pager");
+    const libraryPageInfo = document.getElementById("library-page-info");
+    const libraryPrev = document.getElementById("library-prev");
+    const libraryNext = document.getElementById("library-next");
+
+    // state
+    let todaySortMode = "weight";
+    let latestTodayHotspots = [];
+    let latestTodayByDateRows = null;
+    let latestFocusCards = [];
+    let focusVisibleCount = 20;
+    let latestLibraryRows = [];
+    let libraryPage = 1;
+    const libraryPageSize = 10;
+    const SORT_LABEL = {
+      weight: "权重",
+      platform: "平台",
+      new: "新上",
+    };
+
+    // utils
+    function setLoading(isLoading, message = "", mode = "home") {
+      applyBtn.disabled = isLoading;
+      searchApplyBtn.disabled = isLoading;
+      openSearchBtn.disabled = isLoading;
+      closeSearchBtn.disabled = isLoading;
+      applyBtn.textContent = isLoading ? "正在刷新..." : "刷新看板";
+      searchApplyBtn.textContent = isLoading ? "正在检索..." : "执行检索";
+      topLoading.classList.toggle("active", isLoading);
+      todaySortTabs.style.pointerEvents = isLoading ? "none" : "auto";
+      focusMoreBtn.disabled = isLoading;
+      hint.classList.remove("error");
+      if (message) {
+        hint.textContent = message;
+      }
+      if (isLoading && mode === "search") {
+        renderLibraryLoading();
+      }
+    }
+
+    function fmt(value) {
+      return new Intl.NumberFormat("zh-CN").format(value || 0);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;");
+    }
+
+    // renderers
+    function renderPlatformLinks(platformLinks) {
+      if (!Array.isArray(platformLinks) || !platformLinks.length) {
+        return '<span class="focus-meta">当前没有可展开的平台链接</span>';
+      }
+      const dedupedMap = new Map();
+      platformLinks.forEach((item) => {
+        const key = String(item.platform || "").trim();
+        if (!key) return;
+        const currentRank = Number(item.rank || 9999);
+        const prev = dedupedMap.get(key);
+        if (!prev) {
+          dedupedMap.set(key, item);
+          return;
+        }
+        const prevRank = Number(prev.rank || 9999);
+        if (currentRank < prevRank) {
+          dedupedMap.set(key, item);
+        }
+      });
+      const deduped = Array.from(dedupedMap.values()).sort((a, b) => Number(a.rank || 9999) - Number(b.rank || 9999));
+      return `
+        <div class="platform-links">
+          ${deduped.map((item) => {
+            const label = item.rank ? `${item.platform} #${fmt(item.rank)}` : item.platform;
+            if (item.url) {
+              return `<a class="platform-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">${escapeHtml(label)}</a>`;
+            }
+            return `<span class="platform-link muted">${escapeHtml(label)}</span>`;
+          }).join("")}
+        </div>
+      `;
+    }
+
+    function renderFocus(cards) {
+      latestFocusCards = Array.isArray(cards) ? cards : [];
+      focusGrid.innerHTML = "";
+      if (!latestFocusCards.length) {
+        focusMoreBtn.hidden = true;
+        const item = document.createElement("article");
+        item.className = "focus-card";
+        item.innerHTML = `
+          <div class="focus-top"><span class="chip">暂无跨平台</span></div>
+          <strong>当前没有可展示的跨平台传播事件</strong>
+          <span>这一版已经过滤掉单平台热点。可以尝试换关键词、切换日期，或放宽筛选条件。</span>
+        `;
+        focusGrid.appendChild(item);
+        return;
+      }
+
+      const visibleCards = latestFocusCards.slice(0, focusVisibleCount);
+      visibleCards.forEach((card, index) => {
+        const item = document.createElement("article");
+        item.className = "focus-card";
+        item.innerHTML = `
+          <div class="focus-top">
+            <span class="chip">TOP ${index + 1} · ${escapeHtml(card.keyword)}</span>
+            <span class="focus-meta">权重 ${escapeHtml(card.aggregate_weight ?? '-')}</span>
+          </div>
+          <strong>${escapeHtml(card.headline)}</strong>
+          <span>${escapeHtml(card.reason)}</span>
+          <span class="focus-meta">相关平台</span>
+          ${renderPlatformLinks(card.platform_links)}
+        `;
+        focusGrid.appendChild(item);
+      });
+
+      focusMoreBtn.hidden = focusVisibleCount >= latestFocusCards.length;
+    }
+
+    function renderLibrary(rows) {
+      libraryBody.innerHTML = "";
+      latestLibraryRows = Array.isArray(rows) ? rows : [];
+      if (!latestLibraryRows.length) {
+        libraryPager.hidden = true;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td colspan="6">
+            <strong>这一轮没有查到热点</strong>
+            <div class="sub">可以试试换关键词，或者放宽时间范围后再搜一轮。</div>
+          </td>
+        `;
+        libraryBody.appendChild(tr);
+        return;
+      }
+      const totalPages = Math.max(1, Math.ceil(latestLibraryRows.length / libraryPageSize));
+      libraryPage = Math.min(Math.max(libraryPage, 1), totalPages);
+      const startIndex = (libraryPage - 1) * libraryPageSize;
+      const pageRows = latestLibraryRows.slice(startIndex, startIndex + libraryPageSize);
+
+      function renderSparkline(history) {
+        if (!history || history.length <= 1) {
+          return '<span class="sub">单日数据</span>';
+        }
+        const width = 150;
+        const height = 34;
+        const pad = 4;
+        const ranks = history.map((point) => Number(point.rank || 0)).filter((rank) => rank > 0);
+        if (!ranks.length) {
+          return '<span class="sub">暂无趋势</span>';
+        }
+        const min = Math.min(...ranks);
+        const max = Math.max(...ranks);
+        const span = Math.max(max - min, 1);
+        const step = history.length > 1 ? (width - pad * 2) / (history.length - 1) : 1;
+        const points = history.map((point, index) => {
+          const rank = Number(point.rank || max);
+          const x = pad + index * step;
+          const y = pad + ((rank - min) / span) * (height - pad * 2);
+          return `${x},${y}`;
+        }).join(" ");
+        return `
+          <svg class="sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+            <polyline points="${points}" fill="none" stroke="#145b64" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
+            ${history.map((point, index) => {
+              const rank = Number(point.rank || max);
+              const x = pad + index * step;
+              const y = pad + ((rank - min) / span) * (height - pad * 2);
+              return `<circle cx="${x}" cy="${y}" r="2.4" fill="#b44d1f"></circle>`;
+            }).join("")}
+          </svg>
+        `;
+      }
+
+      pageRows.forEach((row) => {
+        const trendClass = row.trend_direction || "flat";
+        const trendDelta = typeof row.trend_delta === "number"
+          ? row.trend_delta > 0
+            ? `较首次采样提升 ${fmt(row.trend_delta)} 位`
+            : row.trend_delta < 0
+              ? `较首次采样下滑 ${fmt(Math.abs(row.trend_delta))} 位`
+              : "与首次采样持平"
+          : row.is_new
+            ? "当天仅采到 1 次，可视为新上榜"
+            : row.trend_label === "样本不足"
+              ? "只有采样次数，没有 rank_history，暂时无法判断日内趋势"
+              : "暂无可比较的日内采样";
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="title-cell">
+            <strong>${row.url ? `<a class="link" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">` : ""}${escapeHtml(row.title)}${row.url ? "</a>" : ""}</strong>
+          </td>
+          <td>${escapeHtml(row.platform_name)}</td>
+          <td>${escapeHtml(row.date || "-")}</td>
+          <td>${row.rank ? `#${fmt(row.rank)}` : "-"}</td>
+          <td class="trend-cell">
+            ${renderSparkline(row.rank_history)}
+          </td>
+          <td>
+            <span class="trend-badge ${escapeHtml(trendClass)}">${escapeHtml(row.trend_label || "持平")}</span>
+            <div class="sub">${escapeHtml(trendDelta)}</div>
+          </td>
+        `;
+        libraryBody.appendChild(tr);
+      });
+      libraryPager.hidden = false;
+      libraryPageInfo.textContent = `第 ${fmt(libraryPage)} / ${fmt(totalPages)} 页 · 共 ${fmt(latestLibraryRows.length)} 条`;
+      libraryPrev.disabled = libraryPage <= 1;
+      libraryNext.disabled = libraryPage >= totalPages;
+    }
+
+    function renderLibraryPrompt(message) {
+      libraryBody.innerHTML = "";
+      latestLibraryRows = [];
+      libraryPage = 1;
+      libraryPager.hidden = true;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td colspan="6">
+          <strong>${escapeHtml(message)}</strong>
+          <div class="sub">输入关键词后，搜索结果会在这里展开。</div>
+        </td>
+      `;
+      libraryBody.appendChild(tr);
+    }
+
+    function renderLibraryLoading() {
+      libraryBody.innerHTML = "";
+      libraryPager.hidden = true;
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="loading-cell" colspan="6">
+          <strong class="loading-dots">正在加载检索结果</strong>
+          <div class="sub">请稍候，结果将自动更新到列表。</div>
+        </td>
+      `;
+      libraryBody.appendChild(tr);
+    }
+
+    function renderSidebar(rows, sortMode = "weight") {
+      sidebarList.innerHTML = "";
+      const list = Array.isArray(rows) ? [...rows] : [];
+      if (sortMode === "new") {
+        list.splice(0, list.length, ...list.filter((item) => item.is_new_today));
+      } else if (sortMode === "platform") {
+        const sortedByWeight = [...list].sort((a, b) => (a.rank || 999) - (b.rank || 999) || (b.count || 0) - (a.count || 0));
+        const platformCount = {};
+        const balanced = [];
+        for (const item of sortedByWeight) {
+          const key = item.platform_name || "未知平台";
+          platformCount[key] = platformCount[key] || 0;
+          if (platformCount[key] >= 2) continue;
+          platformCount[key] += 1;
+          balanced.push(item);
+        }
+        list.splice(0, list.length, ...balanced);
+      } else {
+        list.sort((a, b) => (b.weight || 0) - (a.weight || 0) || (a.rank || 999) - (b.rank || 999));
+      }
+      const items = list.slice(0, 12);
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "sidebar-item";
+        empty.innerHTML = `<strong>当前筛选下没有可展示的热点</strong><span class="sidebar-meta">可切换排序方式或刷新看板重试。</span>`;
+        sidebarList.appendChild(empty);
+        return;
+      }
+
+      items.forEach((row) => {
+        const weightPart = sortMode === "weight" ? ` · 权重 ${fmt(row.weight || 0)}` : "";
+        const item = document.createElement("article");
+        item.className = "sidebar-item";
+        item.innerHTML = `
+          <strong>${row.url ? `<a class="sidebar-link" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">${escapeHtml(row.title)}</a>` : escapeHtml(row.title)}</strong>
+          <span class="sidebar-meta">${escapeHtml(row.platform_name)} · ${row.rank ? `#${fmt(row.rank)}` : "未排名"}${weightPart}</span>
+          <span class="sidebar-meta">当日采样 ${fmt(row.count || 0)} 次 ${row.is_new_today ? "· 新上" : ""}</span>
+        `;
+        sidebarList.appendChild(item);
+      });
+    }
+
+    function setTodaySortMode(mode) {
+      todaySortMode = mode;
+      const buttons = todaySortTabs.querySelectorAll(".top-tab");
+      buttons.forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.mode === mode);
+      });
+    }
+
+    async function ensurePlatformRowsLoaded() {
+      if (latestTodayByDateRows) {
+        return;
+      }
+      const response = await fetch("api/hotspot-today-by-date?limit=300");
+      const payload = await response.json();
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.detail || payload.message || "平台排序数据加载失败");
+      }
+      latestTodayByDateRows = payload.rows || [];
+    }
+
+    function renderMiniAlerts(alerts) {
+      miniAlertList.innerHTML = "";
+      const rows = (alerts || []).slice(0, 3);
+      if (!rows.length) {
+        return;
+      }
+      rows.forEach((alert) => {
+        const detail = String(alert.detail || "");
+        const currentMatch = detail.match(/当前\s*(\d+)/);
+        const previousMatch = detail.match(/上一周期\s*(\d+)/);
+        const growthMatch = detail.match(/增幅\s*([^。]+)/);
+        const sampleMatch = detail.match(/样本：(.+)$/);
+        const keywordTitleMatch = String(alert.title || "").match(/关键词「(.+)」疑似异常升温/);
+        const fallbackTitle = keywordTitleMatch ? `${keywordTitleMatch[1]} 疑似异常升温` : (alert.title || "异常提示");
+        const displayTitle = sampleMatch ? sampleMatch[1] : fallbackTitle;
+        const levelLabel = alert.level === "critical" ? "高" : alert.level === "warning" ? "中" : "提示";
+        const item = document.createElement("article");
+        item.className = `mini-alert ${escapeHtml(alert.level || "info")}`;
+        item.innerHTML = `
+          <div class="mini-alert-head">
+            <b>${escapeHtml(displayTitle)}</b>
+            <span class="mini-alert-level">${levelLabel}</span>
+          </div>
+          <div class="mini-alert-metrics">
+            <span>增幅 <strong>${escapeHtml(growthMatch ? growthMatch[1] : "-")}</strong></span>
+            <span>当前 <strong>${escapeHtml(currentMatch ? currentMatch[1] : "-")}</strong></span>
+            <span>上一周期 <strong>${escapeHtml(previousMatch ? previousMatch[1] : "-")}</strong></span>
+          </div>
+        `;
+        miniAlertList.appendChild(item);
+      });
+    }
+
+    async function loadMiniAlerts() {
+      try {
+        const response = await fetch("api/hotspot-viral-alerts?topic=AI");
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+          return;
+        }
+        renderMiniAlerts(payload.alerts || []);
+      } catch (_error) {
+        miniAlertList.innerHTML = "";
+      }
+    }
+
+    function renderPayload(payload, useSearchFilters = false) {
+      if (useSearchFilters) {
+        renderLibrary(payload.library.rows || []);
+        hint.classList.remove("error");
+        hint.textContent = "热点检索已完成。首页右侧热点榜单快览保持不变。";
+        return;
+      }
+
+      document.getElementById("metric-latest").textContent = fmt(payload.today_hotspot_total || 0);
+      document.getElementById("metric-topics").textContent = fmt(payload.focus.snapshot.trending_keywords);
+
+      latestTodayHotspots = payload.today_hotspots || [];
+      latestTodayByDateRows = payload.today_hotspots_by_date || [];
+      focusVisibleCount = 20;
+      renderFocus(payload.focus.cards || []);
+      const sidebarRows = todaySortMode === "platform" && latestTodayByDateRows ? latestTodayByDateRows : latestTodayHotspots;
+      renderSidebar(sidebarRows, todaySortMode);
+      hint.classList.remove("error");
+      hint.textContent = `看板已刷新。重点关注按 ${escapeHtml(payload.focus.snapshot.window_label || "今日")} 聚合；热点榜单按「${SORT_LABEL[todaySortMode] || "权重"}」排序。`;
+    }
+
+    // api actions
+    function buildParams(useSearchFilters) {
+      return new URLSearchParams({
+        keyword: useSearchFilters ? keywordInput.value.trim() : "",
+        platforms: "",
+        start_date: useSearchFilters ? startDateInput.value : "",
+        end_date: useSearchFilters ? endDateInput.value : "",
+        focus_window: focusWindowInput.value,
+        focus_mode: "daily",
+        limit: "40"
+      });
+    }
+
+    async function loadHotspots(useSearchFilters = false) {
+      if (useSearchFilters && !keywordInput.value.trim()) {
+        renderLibraryPrompt("请输入关键词后再执行检索");
+        keywordInput.focus();
+        return;
+      }
+      const params = buildParams(useSearchFilters);
+      setLoading(true, useSearchFilters ? "正在加载热点库检索结果..." : "正在刷新首页重点和热点榜单...", useSearchFilters ? "search" : "home");
+      try {
+        const response = await fetch(`api/hotspot-watch?${params.toString()}`);
+        const payload = await response.json();
+        if (!response.ok || !payload.success) {
+          throw new Error(payload.detail || payload.message || "热点跟踪数据加载失败");
+        }
+        if (useSearchFilters) {
+          libraryPage = 1;
+        }
+        renderPayload(payload, useSearchFilters);
+        if (!useSearchFilters) {
+          await loadMiniAlerts();
+        }
+      } catch (error) {
+        hint.classList.add("error");
+        hint.textContent = `加载失败：${error.message}`;
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function openSearchModal() {
+      searchModal.classList.add("open");
+      searchModal.setAttribute("aria-hidden", "false");
+      if (!libraryBody.children.length) {
+        renderLibraryPrompt("请输入关键词后再搜索热点库");
+      }
+    }
+
+    function closeSearchModal() {
+      searchModal.classList.remove("open");
+      searchModal.setAttribute("aria-hidden", "true");
+    }
+
+    // event bindings
+    applyBtn.addEventListener("click", () => loadHotspots(false));
+    searchApplyBtn.addEventListener("click", () => loadHotspots(true));
+    openSearchBtn.addEventListener("click", openSearchModal);
+    closeSearchBtn.addEventListener("click", closeSearchModal);
+    searchModal.addEventListener("click", (event) => {
+      if (event.target === searchModal) closeSearchModal();
+    });
+    libraryPrev.addEventListener("click", () => {
+      if (libraryPage <= 1) return;
+      libraryPage -= 1;
+      renderLibrary(latestLibraryRows);
+    });
+    libraryNext.addEventListener("click", () => {
+      const totalPages = Math.max(1, Math.ceil(latestLibraryRows.length / libraryPageSize));
+      if (libraryPage >= totalPages) return;
+      libraryPage += 1;
+      renderLibrary(latestLibraryRows);
+    });
+    todaySortTabs.addEventListener("click", async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const mode = target.dataset.mode;
+      if (!mode || mode === todaySortMode) return;
+      setTodaySortMode(mode);
+      try {
+        if (mode === "platform") {
+          await ensurePlatformRowsLoaded();
+          renderSidebar(latestTodayByDateRows || [], mode);
+        } else {
+          const rows = mode === "weight" ? latestTodayHotspots : (latestTodayByDateRows || []);
+          renderSidebar(rows, mode);
+        }
+      } catch (error) {
+        hint.classList.add("error");
+        hint.textContent = `加载失败：${error.message}`;
+      }
+    });
+    focusMoreBtn.addEventListener("click", () => {
+      focusVisibleCount += 20;
+      renderFocus(latestFocusCards);
+    });
+    keywordInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") loadHotspots(true);
+    });
+    renderLibraryPrompt("请输入关键词后再执行检索");
+    loadHotspots(false);
+  </script>
+</body>
+</html>

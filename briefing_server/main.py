@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from trendradar import __version__
 from briefing_server.service import BriefingService
+from briefing_server.hotspot.service import app as hotspot_app
 
 
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +41,12 @@ app = FastAPI(
     description="TrendRadar 智能简报服务 API",
     lifespan=lifespan,
 )
+
+# Hotspot 子应用（页面 + API）
+# 主路径：
+# - /hotspot/watch
+# - /hotspot/api/hotspot-watch
+app.mount("/hotspot", hotspot_app)
 
 
 class BriefingRequest(BaseModel):

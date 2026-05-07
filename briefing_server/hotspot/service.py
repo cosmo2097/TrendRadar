@@ -14,13 +14,13 @@ from fastapi.responses import FileResponse
 
 
 ROOT = Path(__file__).resolve().parents[2]
-HTML_PATH = Path(__file__).resolve().with_name("hotspot-tracker-demo.html")
-OPS_HTML_PATH = Path(__file__).resolve().with_name("hotspot-ops-board.html")
-WATCH_HTML_PATH = Path(__file__).resolve().with_name("hotspot-watch-prototype.html")
+WATCH_HTML_PATH = Path(__file__).resolve().parent / "static" / "hotspot-watch.html"
+HTML_PATH = WATCH_HTML_PATH
+OPS_HTML_PATH = WATCH_HTML_PATH
 DEFAULT_MCP_URL = "http://127.0.0.1:3333/mcp"
 MCP_URL = os.getenv("TRENDPULSE_MCP_URL") or os.getenv("MCP_URL") or DEFAULT_MCP_URL
 
-app = FastAPI(title="TrendPulse Prototype Service")
+app = FastAPI(title="TrendPulse Hotspot Watch Service")
 
 
 def _date_range(days: int) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
@@ -72,10 +72,12 @@ def _run_mcporter_sync(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         stdout_text = Path(temp_path).read_text(encoding="utf-8", errors="ignore")
         outer = json.loads(stdout_text)
         inner_raw = outer.get("result")
-        if not isinstance(inner_raw, str):
+        if isinstance(inner_raw, str):
+            inner = json.loads(inner_raw)
+        elif isinstance(inner_raw, dict):
+            inner = inner_raw
+        else:
             raise HTTPException(status_code=502, detail=f"{tool_name} 返回结构异常")
-
-        inner = json.loads(inner_raw)
         if inner.get("success") is False:
             error = inner.get("error", {})
             raise HTTPException(status_code=502, detail=f"{tool_name} 业务失败: {error.get('message', 'unknown error')}")
@@ -196,6 +198,49 @@ def _build_aggregate_rows(aggregate: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _build_today_hotspot_rows_from_aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for item in rows:
+        platform_count = int(item.get("platform_count", len(item.get("platforms", []))) or 0)
+        if platform_count != 1:
+            continue
+        platforms = item.get("platforms", [])
+        platform_name = str(platforms[0]) if platforms else "未知平台"
+        result.append(
+            {
+                "title": item.get("representative_title", "未命名热点"),
+                "platform_name": platform_name,
+                "rank": int(item.get("best_rank", 0) or 0),
+                "count": int(item.get("total_count", 0) or 0),
+                "weight": round(float(item.get("aggregate_weight", 0) or 0), 2),
+                "url": _aggregate_primary_url(item),
+                "is_new_today": int(item.get("total_count", 0) or 0) == 1,
+            }
+        )
+    result.sort(key=lambda x: (-x["weight"], x["rank"] or 999, x["title"]))
+    return result
+
+
+def _build_today_hotspot_rows_from_by_date(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    rows = _annotate_library_trends(_build_library_rows(payload.get("data", [])))
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        normalized_rows.append(
+            {
+                "title": row.get("title", ""),
+                "platform_name": row.get("platform_name", "未知平台"),
+                "rank": int(row.get("rank", 0) or 0),
+                "count": int(row.get("count", 0) or 0),
+                "weight": round(float(row.get("weight", 0) or 0), 2),
+                "url": row.get("url", ""),
+                "is_new_today": int(row.get("count", 0) or 0) == 1,
+            }
+        )
+    summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
+    total = int(summary.get("total", 0) or 0)
+    return normalized_rows, max(total, len(normalized_rows))
+
+
 def _parse_platforms(raw: str | None) -> list[str] | None:
     if not raw:
         return None
@@ -212,6 +257,20 @@ def _build_date_range(start: str | None, end: str | None) -> dict[str, str] | No
     if end:
         return {"start": end, "end": end}
     return None
+
+
+def _focus_window_range(window: str) -> tuple[dict[str, str], str]:
+    today = date.today()
+    if window == "yesterday":
+        target = today - timedelta(days=1)
+        return {"start": target.isoformat(), "end": target.isoformat()}, "昨天"
+    if window == "last_3_days":
+        start = today - timedelta(days=2)
+        return {"start": start.isoformat(), "end": today.isoformat()}, "近3天"
+    if window == "last_7_days":
+        start = today - timedelta(days=6)
+        return {"start": start.isoformat(), "end": today.isoformat()}, "近一周"
+    return {"start": today.isoformat(), "end": today.isoformat()}, "今日"
 
 
 def _extract_link(item: dict[str, Any]) -> str:
@@ -295,6 +354,54 @@ def _aggregate_primary_url(item: dict[str, Any]) -> str:
     return ""
 
 
+def _build_platform_links(item: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = item.get("sources", [])
+    url_items = item.get("urls", [])
+    url_by_platform: dict[str, str] = {}
+    if isinstance(url_items, list):
+        for url_item in url_items:
+            if not isinstance(url_item, dict):
+                continue
+            platform_name = str(url_item.get("platform") or "").strip()
+            if not platform_name:
+                continue
+            resolved_url = str(url_item.get("url") or url_item.get("mobileUrl") or "").strip()
+            if resolved_url:
+                url_by_platform[platform_name] = resolved_url
+
+    links: list[dict[str, Any]] = []
+    if isinstance(sources, list) and sources:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            platform_name = str(source.get("platform") or "").strip()
+            if not platform_name:
+                continue
+            links.append(
+                {
+                    "platform": platform_name,
+                    "url": url_by_platform.get(platform_name, ""),
+                    "rank": int(source.get("rank", 0) or 0),
+                    "date": str(source.get("date") or ""),
+                }
+            )
+        return links
+
+    for platform_name in item.get("platforms", []) or []:
+        platform_label = str(platform_name or "").strip()
+        if not platform_label:
+            continue
+        links.append(
+            {
+                "platform": platform_label,
+                "url": url_by_platform.get(platform_label, ""),
+                "rank": 0,
+                "date": "",
+            }
+        )
+    return links
+
+
 def _filter_aggregate_rows(rows: list[dict[str, Any]], keyword: str) -> list[dict[str, Any]]:
     if not keyword:
         return rows
@@ -312,6 +419,7 @@ def _build_focus_cards_from_aggregate(
     top_n: int,
     summary: dict[str, Any],
     keyword: str,
+    window_label: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     filtered_rows = _filter_aggregate_rows(rows, keyword)
     cross_platform_rows = [
@@ -346,8 +454,9 @@ def _build_focus_cards_from_aggregate(
                 "headline": headline,
                 "platform_name": " / ".join(platforms[:3]) if platforms else "热点库",
                 "url": _aggregate_primary_url(item),
+                "platform_links": _build_platform_links(item),
                 "reason": (
-                    f"{'当前视角' if mode == 'current' else '今日累计'}下，这个事件的聚合权重为 "
+                    f"{window_label}内，这个事件的聚合权重为 "
                     f"{float(item.get('aggregate_weight', 0) or 0):.1f}，覆盖 {platform_count} 个平台，"
                     f"传播强度 {int(item.get('total_count', 0) or 0)}"
                     f"{f'，最佳排名 #{rank}' if rank else ''}。"
@@ -367,6 +476,7 @@ def _build_focus_cards_from_aggregate(
 
     snapshot = {
         "mode": mode,
+        "window_label": window_label,
         "latest_total": int(summary.get("original_count", total_rows) or total_rows),
         "latest_returned": len(source_rows),
         "trending_keywords": len(cards),
@@ -435,6 +545,31 @@ def _build_ops_alerts(
     return alerts[:4]
 
 
+def _build_viral_alerts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = payload.get("data", []) if isinstance(payload, dict) else []
+    alerts: list[dict[str, Any]] = []
+    for row in rows[:4]:
+        keyword = str(row.get("keyword") or "未知关键词")
+        level_raw = str(row.get("alert_level") or "中")
+        level = "critical" if level_raw == "高" else "warning"
+        growth = row.get("growth_rate", "-")
+        current_count = int(row.get("current_count", 0) or 0)
+        previous_count = int(row.get("previous_count", 0) or 0)
+        titles = row.get("sample_titles", [])
+        sample = str(titles[0]) if isinstance(titles, list) and titles else ""
+        alerts.append(
+            {
+                "level": level,
+                "title": f"关键词「{keyword}」疑似异常升温",
+                "detail": (
+                    f"当前 {current_count}，上一周期 {previous_count}，增幅 {growth}。"
+                    f"{f'样本：{sample}' if sample else ''}"
+                ),
+            }
+        )
+    return alerts
+
+
 @app.get("/")
 async def serve_demo() -> FileResponse:
     return FileResponse(HTML_PATH)
@@ -445,7 +580,7 @@ async def serve_ops_board() -> FileResponse:
     return FileResponse(OPS_HTML_PATH)
 
 
-@app.get("/hotspot-watch")
+@app.get("/watch")
 async def serve_hotspot_watch() -> FileResponse:
     return FileResponse(WATCH_HTML_PATH)
 
@@ -578,16 +713,14 @@ async def hotspot_watch(
     platforms: str = Query("", description="逗号分隔的平台 ID"),
     start_date: str = Query("", description="开始日期 YYYY-MM-DD"),
     end_date: str = Query("", description="结束日期 YYYY-MM-DD"),
+    focus_window: str = Query("today", pattern="^(today|yesterday|last_3_days|last_7_days)$"),
     focus_mode: str = Query("current", pattern="^(current|daily)$"),
     limit: int = Query(40, ge=1, le=100),
 ) -> dict[str, Any]:
     platform_list = _parse_platforms(platforms)
     explicit_range = _build_date_range(start_date or None, end_date or None)
     cleaned_keyword = keyword.strip()
-    focus_range = explicit_range or {
-        "start": date.today().isoformat(),
-        "end": date.today().isoformat(),
-    }
+    focus_range, focus_window_label = _focus_window_range(focus_window)
 
     if cleaned_keyword:
         library_payload = await _run_tool(
@@ -603,33 +736,41 @@ async def hotspot_watch(
         library_rows = _annotate_library_trends(_build_library_rows(library_payload.get("data", [])))
         query_mode = "keyword_search"
     else:
-        library_payload = await _run_tool(
-            "get_news_by_date",
-            date_range=focus_range,
-            platforms=platform_list,
-            limit=limit,
-            include_url=True,
-        )
-        library_summary = library_payload.get("summary", {})
-        library_rows = _annotate_library_trends(_build_library_rows(library_payload.get("data", [])))
-        query_mode = "date_browse"
+        library_summary = {}
+        library_rows = []
+        query_mode = "idle"
 
     aggregate_payload = await _run_tool(
         "aggregate_news",
         date_range=focus_range,
         platforms=platform_list,
-        limit=max(limit, 20),
+        limit=max(limit, 300),
         include_url=True,
     )
+    today_range = {
+        "start": date.today().isoformat(),
+        "end": date.today().isoformat(),
+    }
+    by_date_payload = await _run_tool(
+        "get_news_by_date",
+        date_range=today_range,
+        platforms=platform_list,
+        limit=max(limit, 300),
+        include_url=True,
+    )
+    aggregate_rows = aggregate_payload.get("data", [])
+    today_hotspot_rows = _build_today_hotspot_rows_from_aggregate(aggregate_rows)
+    today_hotspot_rows_by_date, _today_hotspot_total_by_date = _build_today_hotspot_rows_from_by_date(by_date_payload)
 
     focus_snapshot, focus_cards = _build_focus_cards_from_aggregate(
-        rows=aggregate_payload.get("data", []),
+        rows=aggregate_rows,
         mode=focus_mode,
-        top_n=max(len(aggregate_payload.get("data", [])), 1),
+        top_n=max(len(aggregate_rows), 1),
         summary=aggregate_payload.get("summary", {}),
         keyword=cleaned_keyword,
+        window_label=focus_window_label,
     )
-
+    today_hotspot_total = int(focus_snapshot.get("latest_total", 0) or 0)
     return {
         "success": True,
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -639,6 +780,7 @@ async def hotspot_watch(
             "platforms": platform_list or [],
             "start_date": start_date,
             "end_date": end_date,
+            "focus_window": focus_window,
             "focus_mode": focus_mode,
             "limit": limit,
         },
@@ -646,9 +788,50 @@ async def hotspot_watch(
             "snapshot": focus_snapshot,
             "cards": focus_cards,
         },
+        "today_hotspots": today_hotspot_rows,
+        "today_hotspots_by_date": today_hotspot_rows_by_date,
         "library": {
             "query_mode": query_mode,
             "summary": library_summary,
             "rows": library_rows,
         },
+        "today_hotspot_total": today_hotspot_total,
+    }
+
+
+@app.get("/api/hotspot-viral-alerts")
+async def hotspot_viral_alerts(topic: str = Query("AI", min_length=1)) -> dict[str, Any]:
+    viral_payload = await _run_tool(
+        "analyze_topic_trend",
+        topic=topic,
+        analysis_type="viral",
+    )
+    return {
+        "success": True,
+        "topic": topic,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "alerts": _build_viral_alerts(viral_payload),
+        "summary": viral_payload.get("summary", {}),
+    }
+
+
+@app.get("/api/hotspot-today-by-date")
+async def hotspot_today_by_date(limit: int = Query(300, ge=1, le=1000)) -> dict[str, Any]:
+    today_range = {
+        "start": date.today().isoformat(),
+        "end": date.today().isoformat(),
+    }
+    payload = await _run_tool(
+        "get_news_by_date",
+        date_range=today_range,
+        limit=limit,
+        include_url=True,
+    )
+    normalized_rows, total = _build_today_hotspot_rows_from_by_date(payload)
+    return {
+        "success": True,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "summary": payload.get("summary", {}),
+        "total": total,
+        "rows": normalized_rows,
     }
