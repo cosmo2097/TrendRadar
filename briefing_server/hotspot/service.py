@@ -11,16 +11,30 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from mcp import ClientSession
+from mcp.client.sse import sse_client
+try:
+    from mcp.client.streamable_http import streamablehttp_client as _streamable_http_client
+except Exception:
+    try:
+        from mcp.client.streamable_http import streamable_http_client as _streamable_http_client
+    except Exception:
+        _streamable_http_client = None
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WATCH_HTML_PATH = Path(__file__).resolve().parent / "static" / "hotspot-watch.html"
 HTML_PATH = WATCH_HTML_PATH
 OPS_HTML_PATH = WATCH_HTML_PATH
-DEFAULT_MCP_URL = "http://127.0.0.1:3333/mcp"
+DEFAULT_MCP_URL = "http://192.168.203.118:3333/mcp"
 MCP_URL = os.getenv("TRENDPULSE_MCP_URL") or os.getenv("MCP_URL") or DEFAULT_MCP_URL
+MCP_BACKEND = (os.getenv("TRENDPULSE_MCP_BACKEND") or "python").strip().lower()
+MCP_SSE_URL = (os.getenv("TRENDPULSE_MCP_SSE_URL") or "").strip()
+MCP_TRANSPORT = (os.getenv("TRENDPULSE_MCP_TRANSPORT") or "auto").strip().lower()
+MCP_DISABLE_MCPORTER_FALLBACK = (os.getenv("TRENDPULSE_DISABLE_MCPORTER_FALLBACK") or "false").strip().lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(title="TrendPulse Hotspot Watch Service")
+LAST_MCP_TRANSPORT = "unknown"
 
 
 def _date_range(days: int) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
@@ -88,7 +102,97 @@ def _run_mcporter_sync(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _run_tool(tool_name: str, **kwargs: Any) -> dict[str, Any]:
-    return await asyncio.to_thread(_run_mcporter_sync, tool_name, kwargs)
+    if MCP_BACKEND == "mcporter":
+        return await asyncio.to_thread(_run_mcporter_sync, tool_name, kwargs)
+    return await _run_python_mcp_tool(tool_name, kwargs)
+
+
+async def _run_python_mcp_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    global LAST_MCP_TRANSPORT
+    sse_url = MCP_SSE_URL or _derive_sse_url(MCP_URL)
+    errors: list[str] = []
+
+    transport_mode = MCP_TRANSPORT
+    allow_http = transport_mode in {"auto", "streamablehttp", "streamable_http", "http"}
+    allow_sse = transport_mode in {"auto", "sse"}
+
+    if allow_http and _streamable_http_client is not None:
+        try:
+            async with _streamable_http_client(MCP_URL) as streams:
+                read_stream, write_stream, _get_session_id = streams
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    response = await session.call_tool(tool_name, arguments=args)
+            LAST_MCP_TRANSPORT = "streamableHttp"
+            return _parse_tool_response(tool_name, response)
+        except Exception as exc:
+            errors.append(f"streamable_http({MCP_URL}): {_fmt_exc(exc)}")
+
+    if allow_sse:
+        try:
+            async with sse_client(sse_url) as streams:
+                async with ClientSession(*streams) as session:
+                    await session.initialize()
+                    response = await session.call_tool(tool_name, arguments=args)
+            LAST_MCP_TRANSPORT = "sse"
+            return _parse_tool_response(tool_name, response)
+        except Exception as exc:
+            errors.append(f"sse({sse_url}): {_fmt_exc(exc)}")
+
+    # 自动回退到 mcporter，避免 Python SDK/传输不兼容导致接口不可用
+    if MCP_DISABLE_MCPORTER_FALLBACK:
+        raise HTTPException(status_code=502, detail=f"{tool_name} 调用失败: {' | '.join(errors)}")
+
+    try:
+        LAST_MCP_TRANSPORT = "mcporter"
+        return await asyncio.to_thread(_run_mcporter_sync, tool_name, args)
+    except HTTPException as exc:
+        errors.append(f"mcporter({MCP_URL}): {exc.detail}")
+        raise HTTPException(status_code=502, detail=f"{tool_name} 调用失败: {' | '.join(errors)}") from exc
+
+
+def _parse_tool_response(tool_name: str, response: Any) -> dict[str, Any]:
+    if getattr(response, "isError", False):
+        raise HTTPException(status_code=502, detail=f"{tool_name} 业务失败: MCP 返回错误")
+
+    content = getattr(response, "content", None) or []
+    text = ""
+    for item in content:
+        if hasattr(item, "text") and item.text:
+            text = item.text
+            break
+    if not text:
+        raise HTTPException(status_code=502, detail=f"{tool_name} 返回结构异常")
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail=f"{tool_name} 返回非 JSON 文本") from exc
+
+    if isinstance(parsed, dict) and parsed.get("success") is False:
+        error = parsed.get("error", {})
+        message = error.get("message", "unknown error") if isinstance(error, dict) else str(error)
+        raise HTTPException(status_code=502, detail=f"{tool_name} 业务失败: {message}")
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail=f"{tool_name} 返回结构异常")
+    return parsed
+
+
+def _derive_sse_url(base_url: str) -> str:
+    cleaned = (base_url or "").strip().rstrip("/")
+    if cleaned.endswith("/mcp"):
+        return cleaned[:-4] + "/sse"
+    if cleaned.endswith("/sse"):
+        return cleaned
+    return cleaned + "/sse"
+
+
+def _fmt_exc(exc: Exception) -> str:
+    details = [str(exc)]
+    if isinstance(exc, BaseExceptionGroup):
+        details = [str(child) for child in exc.exceptions]
+    return "; ".join(item for item in details if item).strip() or exc.__class__.__name__
 
 
 def _build_trend_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -722,8 +826,28 @@ async def hotspot_watch(
     cleaned_keyword = keyword.strip()
     focus_range, focus_window_label = _focus_window_range(focus_window)
 
+    tasks = [
+        _run_tool(
+            "aggregate_news",
+            date_range=focus_range,
+            platforms=platform_list,
+            limit=max(limit, 300),
+            include_url=True,
+        ),
+        _run_tool(
+            "get_news_by_date",
+            date_range={
+                "start": date.today().isoformat(),
+                "end": date.today().isoformat(),
+            },
+            platforms=platform_list,
+            limit=max(limit, 300),
+            include_url=True,
+        )
+    ]
+
     if cleaned_keyword:
-        library_payload = await _run_tool(
+        tasks.append(_run_tool(
             "search_news",
             query=cleaned_keyword,
             date_range=explicit_range,
@@ -731,7 +855,14 @@ async def hotspot_watch(
             limit=limit,
             sort_by="weight",
             include_url=True,
-        )
+        ))
+
+    results = await asyncio.gather(*tasks)
+    aggregate_payload = results[0]
+    by_date_payload = results[1]
+
+    if cleaned_keyword:
+        library_payload = results[2]
         library_summary = library_payload.get("summary", {})
         library_rows = _annotate_library_trends(_build_library_rows(library_payload.get("data", [])))
         query_mode = "keyword_search"
@@ -739,25 +870,6 @@ async def hotspot_watch(
         library_summary = {}
         library_rows = []
         query_mode = "idle"
-
-    aggregate_payload = await _run_tool(
-        "aggregate_news",
-        date_range=focus_range,
-        platforms=platform_list,
-        limit=max(limit, 300),
-        include_url=True,
-    )
-    today_range = {
-        "start": date.today().isoformat(),
-        "end": date.today().isoformat(),
-    }
-    by_date_payload = await _run_tool(
-        "get_news_by_date",
-        date_range=today_range,
-        platforms=platform_list,
-        limit=max(limit, 300),
-        include_url=True,
-    )
     aggregate_rows = aggregate_payload.get("data", [])
     today_hotspot_rows = _build_today_hotspot_rows_from_aggregate(aggregate_rows)
     today_hotspot_rows_by_date, _today_hotspot_total_by_date = _build_today_hotspot_rows_from_by_date(by_date_payload)
@@ -834,4 +946,17 @@ async def hotspot_today_by_date(limit: int = Query(300, ge=1, le=1000)) -> dict[
         "summary": payload.get("summary", {}),
         "total": total,
         "rows": normalized_rows,
+    }
+
+
+@app.get("/api/mcp-transport-debug")
+async def mcp_transport_debug() -> dict[str, Any]:
+    return {
+        "success": True,
+        "backend": MCP_BACKEND,
+        "transport_mode": MCP_TRANSPORT,
+        "mcp_url": MCP_URL,
+        "sse_url": MCP_SSE_URL or _derive_sse_url(MCP_URL),
+        "disable_mcporter_fallback": MCP_DISABLE_MCPORTER_FALLBACK,
+        "last_used_transport": LAST_MCP_TRANSPORT,
     }

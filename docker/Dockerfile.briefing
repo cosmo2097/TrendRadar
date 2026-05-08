@@ -2,9 +2,14 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# 安装依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+# 安装 briefing 专属依赖（与其他服务依赖隔离）
+COPY requirements.briefing.txt .
+RUN pip install --no-cache-dir -r requirements.briefing.txt -i https://mirrors.aliyun.com/pypi/simple/ \
+    && python - <<'PY'
+from importlib.metadata import version
+print("mcp:", version("mcp"))
+print("anyio:", version("anyio"))
+PY
 
 # 复制 Briefing Server 代码
 COPY briefing_server/ ./briefing_server/
