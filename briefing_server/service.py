@@ -186,36 +186,8 @@ class BriefingService:
             word_groups, filter_words, global_filters = parse_frequency_rules(rules)
 
 
-        # 2. 并行获取数据 (本地缓存 + 实时 RSS)
-        # 2. 并行获取数据 (本地缓存 + 实时 RSS)
-        # 根据 date_range 计算日期
-        # 使用 ctx.get_time() 获取带时区的当前时间，确保与数据生成时区一致
-        now = self.ctx.get_time()
-        
-        if date_range == "weekly":
-            # 最近 7 天 (含今天)
-            end_date = now
-            start_date = now - timedelta(days=6)
-            start_str = start_date.strftime("%Y-%m-%d")
-            end_str = end_date.strftime("%Y-%m-%d")
-        elif date_range == "daily":
-            # 今天 (使用 None 触发 _fetch_all_data 的优化路径)
-            start_str = None
-            end_str = None
-        else:
-            # 尝试解析具体日期 (YYYY-MM-DD)
-            try:
-                target = datetime.strptime(date_range, "%Y-%m-%d")
-                start_date = end_date = target
-                start_str = start_date.strftime("%Y-%m-%d")
-                end_str = end_date.strftime("%Y-%m-%d")
-            except ValueError:
-                # 可能是自定义范围 "YYYY-MM-DD,YYYY-MM-DD" 或者解析失败
-                # 这里我们假设 API 层已经验证了格式，或者 date_range 本身就是一个日期
-                # 如果 date_range 不匹配以上关键字，暂且认为是无效或不支持，fallback to daily
-                logger.warning(f"Invalid or unsupported date_range: {date_range}, fallback to daily")
-                start_str = None
-                end_str = None
+        # 2. 根据 date_range 计算日期范围（daily 返回 None 以复用今日快速路径）
+        start_str, end_str = self._resolve_briefing_date_window(date_range)
 
         
         # 传递日期范围给 _fetch_all_data
@@ -271,6 +243,40 @@ class BriefingService:
             "rss_stats": rss_stats,
             "platforms": list(id_to_name.values())
         }
+
+    def _resolve_briefing_date_window(self, date_range: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """解析 briefing date_range，返回 (start_date, end_date)。daily 返回 (None, None)。"""
+        normalized = str(date_range or "daily").strip()
+        normalized_lower = normalized.lower()
+
+        # daily 继续走 today 快速路径，避免读取历史多日数据。
+        if normalized_lower in {"", "daily", "today", "今天"}:
+            return None, None
+
+        if normalized_lower in {"weekly", "last_week", "最近7天"}:
+            now = self.ctx.get_time()
+            start = (now - timedelta(days=6)).strftime("%Y-%m-%d")
+            end = now.strftime("%Y-%m-%d")
+            return start, end
+
+        # 支持 YYYY-MM-DD,YYYY-MM-DD
+        if "," in normalized:
+            parts = [p.strip() for p in normalized.split(",", 1)]
+            if len(parts) == 2 and all(parts):
+                start, end = self._resolve_search_dates(parts[0], parts[1], "all")
+                return start, end
+
+        # 优先复用统一日期解析能力（支持 YYYY-MM-DD / 自然语言）
+        parsed = _validate_date_range_compat(normalized)
+        if not parsed:
+            raise ValueError(f"Unsupported date_range: {date_range}")
+        start_dt, end_dt = parsed
+        start, end = self._resolve_search_dates(
+            start_dt.strftime("%Y-%m-%d"),
+            end_dt.strftime("%Y-%m-%d"),
+            "all",
+        )
+        return start, end
 
     async def search_news(
         self,
@@ -853,15 +859,15 @@ class BriefingService:
 
 
 
-        # 3. 创建并发任务
-        t1 = asyncio.create_task(_fetch_local_news())
-        t2 = asyncio.create_task(_fetch_local_rss())
-        t3 = self._fetch_custom_rss(custom_rss_urls) if custom_rss_urls else None
+        # 3. 创建并发任务并统一等待，避免单任务异常导致其余任务悬挂。
+        tasks = [_fetch_local_news(), _fetch_local_rss()]
+        if custom_rss_urls:
+            tasks.append(self._fetch_custom_rss(custom_rss_urls))
 
-        # 4. 等待结果
-        news_res = await t1
-        local_rss_items = await t2
-        custom_rss_items = await t3 if t3 else []
+        results = await asyncio.gather(*tasks)
+        news_res = results[0]
+        local_rss_items = results[1]
+        custom_rss_items = results[2] if len(results) > 2 else []
 
         # Unpack news results
         all_results, id_to_name, title_info = news_res
